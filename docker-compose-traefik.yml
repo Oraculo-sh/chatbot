@@ -1,0 +1,308 @@
+name: chatbot
+
+# --- ÂNCORAS ---
+x-base: &base
+  restart: always
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "20m"
+      max-file: "3"
+
+x-servicebase: &servicebase
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+    minio:
+      condition: service_started
+  networks:
+    - external
+    - internal
+
+x-n8n_shared: &n8n_shared
+  image: docker.n8n.io/n8nio/n8n
+  environment:
+    - DB_TYPE=postgresdb
+    - DB_POSTGRESDB_HOST=postgres
+    - DB_POSTGRESDB_PORT=5432
+    - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+    - DB_POSTGRESDB_USER=${POSTGRES_NON_ROOT_USER}
+    - DB_POSTGRESDB_PASSWORD=${POSTGRES_NON_ROOT_PASSWORD}
+    - EXECUTIONS_MODE=queue
+    - QUEUE_BULL_REDIS_HOST=redis
+    - QUEUE_HEALTH_CHECK_ACTIVE=true
+    - QUEUE_BULL_REDIS_PASSWORD=${REDIS_PASS}
+    - N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    - N8N_RUNNERS_MODE=external
+    - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
+    - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+    - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+  volumes:
+    - n8n_storage:/home/node/.n8n
+
+x-n8n_runner: &n8n_runner
+  image: n8nio/runners
+  environment:
+    - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
+  networks:
+    - internal
+
+# --- INFRAESTRUTURA BASE ---
+services:
+
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik
+    <<: *base
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ADMIN_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.api.service=api@internal"
+      - "traefik.http.routers.api.middlewares=auth_admin"
+      - "traefik.http.middlewares.auth_admin.basicauth.users=${TRAEFIK_AUTH}"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+    networks:
+      - external
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    <<: *base
+    environment:
+      POSTGRES_USER: postgres_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASS}
+      DB_PASS_EVOLUTION: ${DB_PASS_EVOLUTION}
+      DB_PASS_N8N: ${DB_PASS_N8N}
+      DB_PASS_CHATWOOT: ${DB_PASS_CHATWOOT}
+      DB_PASS_TYPEBOT: ${DB_PASS_TYPEBOT}
+    command: [ "postgres", "-c", "max_connections=1000", "-c", "shared_buffers=512MB" ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    <<: *base
+    command: redis-server --requirepass ${REDIS_PASS} --appendonly yes
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ]
+      start_period: 20s
+      interval: 30s
+      retries: 5
+      timeout: 3s
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    <<: *base
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASS}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.minio.rule=Host(`s3.${DOMAIN}`)"
+      - "traefik.http.routers.minio.tls.certresolver=letsencrypt"
+      - "traefik.http.services.minio.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-console.rule=Host(`console-s3.${DOMAIN}`)"
+      - "traefik.http.routers.minio-console.tls.certresolver=letsencrypt"
+      - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
+    networks:
+      - internal
+      - external
+
+  minio-setup:
+    image: minio/mc
+    container_name: minio_setup
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c " sleep 10; /usr/bin/mc alias set minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASS}; /usr/bin/mc mb --ignore-existing minio/typebot minio/chatwoot minio/evolution; /usr/bin/mc anonymous set public minio/typebot/public; exit 0; "
+    networks:
+      - internal
+
+  # --- EVOLUTION API ---
+  evolution_api:
+    image: evoapicloud/evolution-api:latest
+    container_name: evolution_api
+    <<: [ *base, *servicebase ]
+    env_file: ./envs/evolution.env
+    environment:
+      - DATABASE_CONNECTION_URI=postgresql://evolution_user:${DB_PASS_EVOLUTION}@postgres:5432/evolution_db?schema=evolution_api
+      - CACHE_REDIS_URI=redis://:${REDIS_PASS}@redis:6379/1
+    volumes:
+      - evolution_instances:/evolution/instances
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.evolution.rule=Host(`api.${DOMAIN}`)"
+      - "traefik.http.routers.evolution.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evolution.loadbalancer.server.port=8080"
+
+  evolution_frontend:
+    image: evoapicloud/evolution-manager:latest
+    container_name: evolution_frontend
+    <<: [ *base, *servicebase ]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.evofront.rule=Host(`manager.${DOMAIN}`)"
+      - "traefik.http.routers.evofront.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evofront.loadbalancer.server.port=80"
+
+  # --- TYPEBOT ---
+  typebot-builder:
+    image: baptistearno/typebot-builder:latest
+    container_name: typebot_builder
+    <<: [ *base, *servicebase ]
+    env_file: ./envs/typebot.env
+    environment:
+      - DATABASE_URL=postgresql://typebot_user:${DB_PASS_TYPEBOT}@postgres:5432/typebot_db
+      - REDIS_URL=redis://:${REDIS_PASS}@redis:6379/2
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.typebot-builder.rule=Host(`builder.${DOMAIN}`)"
+      - "traefik.http.routers.typebot-builder.tls.certresolver=letsencrypt"
+      - "traefik.http.services.typebot-builder.loadbalancer.server.port=3000"
+
+  typebot-viewer:
+    image: baptistearno/typebot-viewer:latest
+    container_name: typebot_viewer
+    <<: [ *base, *servicebase ]
+    env_file: ./envs/typebot.env
+    environment:
+      - DATABASE_URL=postgresql://typebot_user:${DB_PASS_TYPEBOT}@postgres:5432/typebot_db
+      - REDIS_URL=redis://:${REDIS_PASS}@redis:6379/2
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.typebot-viewer.rule=Host(`bot.${DOMAIN}`)"
+      - "traefik.http.routers.typebot-viewer.tls.certresolver=letsencrypt"
+      - "traefik.http.services.typebot-viewer.loadbalancer.server.port=3000"
+
+  # --- CHATWOOT ---
+  chatwoot_rails:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_rails
+    <<: [ *base, *servicebase ]
+    env_file: ./envs/chatwoot.env
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DATABASE=chatwoot_db
+      - POSTGRES_USERNAME=chatwoot_user
+      - POSTGRES_PASSWORD=${DB_PASS_CHATWOOT}
+      - REDIS_URL=redis://:${REDIS_PASS}@redis:6379/3
+    entrypoint: docker/entrypoints/rails.sh
+    command: [ 'bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0' ]
+    volumes:
+      - chatwoot_storage:/app/storage
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chatwoot.rule=Host(`chat.${DOMAIN}`)"
+      - "traefik.http.routers.chatwoot.tls.certresolver=letsencrypt"
+      - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
+
+  chatwoot_sidekiq:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_sidekiq
+    <<: [ *base, *servicebase ]
+    env_file: ./envs/chatwoot.env
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DATABASE=chatwoot_db
+      - POSTGRES_USERNAME=chatwoot_user
+      - POSTGRES_PASSWORD=${DB_PASS_CHATWOOT}
+      - REDIS_URL=redis://:${REDIS_PASS}@redis:6379/3
+    command: [ 'bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml' ]
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks:
+      - internal
+
+  # --- N8N (WORKER & RUNNER TOPOLOGY) ---
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n_core
+    <<: [ *base, *servicebase, *n8n_shared ]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`flow.${DOMAIN}`)"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  n8n-runner:
+    image: n8nio/runners
+    container_name: n8n_runner
+    <<: [ *base, *n8n_runner ]
+    depends_on:
+      - n8n
+    environment:
+      - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+
+  n8n-worker:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n_worker
+    <<: [ *base, *n8n_shared ]
+    depends_on:
+      - n8n
+    networks:
+      - internal
+    command: worker
+
+  n8n-worker-runner:
+    container_name: n8n-worker-runner
+    <<: [ *base, *n8n_runner ]
+    depends_on:
+      - n8n-worker
+    environment:
+      - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n-worker:5679
+
+# --- REDES E VOLUMES DEFINITIVOS ---
+networks:
+  internal:
+    name: internal
+    driver: bridge
+  external:
+    name: external
+    driver: bridge
+
+volumes:
+  traefik_certs:
+  postgres_data:
+  redis_data:
+  minio_data:
+  evolution_instances:
+  chatwoot_storage:
+  n8n_storage:
