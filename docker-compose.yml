@@ -39,6 +39,10 @@ x-n8n_shared: &n8n_shared
     - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
     - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
     - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+    - WEBHOOK_URL=https://n8n.local
+    - GENERIC_TIMEZONE=America/Sao_Paulo
+    - TZ=America/Sao_Paulo
+    - N8N_SECURE_COOKIE=false
   volumes:
     - n8n_storage:/home/node/.n8n
 
@@ -59,13 +63,14 @@ services:
     environment:
       POSTGRES_USER: postgres_admin
       POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASS}
+      POSTGRES_DB: postgres
       DB_PASS_EVOLUTION: ${DB_PASS_EVOLUTION}
       DB_PASS_N8N: ${DB_PASS_N8N}
       DB_PASS_CHATWOOT: ${DB_PASS_CHATWOOT}
       DB_PASS_TYPEBOT: ${DB_PASS_TYPEBOT}
     command: [ "postgres", "-c", "max_connections=1000", "-c", "shared_buffers=512MB" ]
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: [ "CMD-SHELL", "pg_isready -U postgres_admin -d postgres" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -81,7 +86,7 @@ services:
     <<: *base
     command: redis-server --requirepass ${REDIS_PASS} --appendonly yes
     healthcheck:
-      test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ]
+      test: [ "CMD-SHELL", "redis-cli -a '${REDIS_PASS}' ping | grep PONG" ]
       start_period: 20s
       interval: 30s
       retries: 5
@@ -104,21 +109,23 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.minio.rule=Host(`s3-minio.local`)"
-      - "traefik.http.services.minio.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio.service=minio-api"
+      - "traefik.http.services.minio-api.loadbalancer.server.port=9000"
       - "traefik.http.routers.minio-console.rule=Host(`console-minio.local`)"
+      - "traefik.http.routers.minio-console.service=minio-console"
       - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
       - "traefik.docker.network=rede_proxy"
     networks:
       - rede_chatbot
       - rede_proxy
 
-  minio-setup:
+  minio_setup:
     image: minio/mc
     container_name: minio_setup
     depends_on:
       - minio_chatbot
     entrypoint: >
-      /bin/sh -c " sleep 10; /usr/bin/mc alias set minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASS}; /usr/bin/mc mb --ignore-existing minio/typebot minio/chatwoot minio/evolution; /usr/bin/mc anonymous set public minio/typebot/public; exit 0; "
+      /bin/sh -c " sleep 10; /usr/bin/mc alias set minio http://minio_chatbot:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASS}; /usr/bin/mc mb --ignore-existing minio/typebot minio/chatwoot minio/evolution; /usr/bin/mc anonymous set public minio/typebot/public; exit 0; "
     networks:
       - rede_chatbot
 
@@ -143,14 +150,21 @@ services:
     image: evoapicloud/evolution-manager:latest
     container_name: evolution_frontend
     <<: [ *base, *servicebase ]
+    env_file: ./envs/evolution.env
+    depends_on:
+      evolution_api:
+        condition: service_started
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.evofront.rule=Host(`manager-evolution.local`)"
       - "traefik.http.services.evofront.loadbalancer.server.port=80"
       - "traefik.docker.network=rede_proxy"
+    volumes:
+      # Patch de correção do Nginx aplicado e testado - 10/03/2026.
+      - ~/projet-paralel/evolution-manager-v2/.docker/nginx.conf:/etc/nginx/conf.d/nginx.conf:ro
 
   # --- TYPEBOT ---
-  typebot-builder:
+  typebot_builder:
     image: baptistearno/typebot-builder:latest
     container_name: typebot_builder
     <<: [ *base, *servicebase ]
@@ -164,7 +178,7 @@ services:
       - "traefik.http.services.typebot-builder.loadbalancer.server.port=3000"
       - "traefik.docker.network=rede_proxy"
 
-  typebot-viewer:
+  typebot_viewer:
     image: baptistearno/typebot-viewer:latest
     container_name: typebot_viewer
     <<: [ *base, *servicebase ]
@@ -228,7 +242,7 @@ services:
       - "traefik.http.services.n8n.loadbalancer.server.port=5678"
       - "traefik.docker.network=rede_proxy"
 
-  n8n-runner:
+  n8n_runner:
     image: n8nio/runners
     container_name: n8n_runner
     <<: [ *base, *n8n_runner ]
@@ -238,7 +252,7 @@ services:
       - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
       - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
 
-  n8n-worker:
+  n8n_worker:
     image: docker.n8n.io/n8nio/n8n
     container_name: n8n_worker
     <<: [ *base, *n8n_shared ]
@@ -248,14 +262,14 @@ services:
       - rede_chatbot
     command: worker
 
-  n8n-worker-runner:
-    container_name: n8n-worker-runner
+  n8n_worker_runner:
+    container_name: n8n_worker_runner
     <<: [ *base, *n8n_runner ]
     depends_on:
-      - n8n-worker
+      - n8n_worker
     environment:
       - N8N_RUNNERS_AUTH_TOKEN=${RUNNERS_AUTH_TOKEN}
-      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n-worker:5679
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n_worker:5679
 
 # --- REDES E VOLUMES DEFINITIVOS ---
 networks:
