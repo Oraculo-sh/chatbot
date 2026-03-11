@@ -4,12 +4,10 @@ set -e
 # O script consome as variáveis globais para forjar os bancos de dados
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
 
-    -- Chatwoot (Requer a extensão vector ativada via superusuário)
-    CREATE USER chatwoot_user WITH PASSWORD '$DB_PASS_CHATWOOT';
+-- Chatwoot (Elevação a Superusuário exigida pelo ActiveRecord)
+    CREATE USER chatwoot_user WITH PASSWORD '$DB_PASS_CHATWOOT' SUPERUSER;
     CREATE DATABASE chatwoot_db;
     GRANT ALL PRIVILEGES ON DATABASE chatwoot_db TO chatwoot_user;
-    \c chatwoot_db
-    CREATE EXTENSION IF NOT EXISTS vector;
     ALTER DATABASE chatwoot_db OWNER TO chatwoot_user;
 
     -- Evolution API
