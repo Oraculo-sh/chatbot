@@ -99,6 +99,7 @@ services:
     image: minio/minio
     container_name: minio_chatbot
     <<: *base
+    restart: "no"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASS}
@@ -107,12 +108,17 @@ services:
       - minio_data:/data
     labels:
       - "traefik.enable=true"
+      # API (Porta 9000)
       - "traefik.http.routers.minio_api.rule=Host(`s3-minio.local`)"
-      - "traefik.http.routers.minio_api.service=minio-api"
+      - "traefik.http.routers.minio_api.service=minio_api"
+      - "traefik.http.routers.minio_api.entrypoints=web"
       - "traefik.http.services.minio_api.loadbalancer.server.port=9000"
+      # CONSOLE (Porta 9001)
       - "traefik.http.routers.minio_console.rule=Host(`console-minio.local`)"
-      - "traefik.http.routers.minio_console.service=minio-console"
+      - "traefik.http.routers.minio_console.service=minio_console"
+      - "traefik.http.routers.minio_console.entrypoints=web"
       - "traefik.http.services.minio_console.loadbalancer.server.port=9001"
+      # Configuração do Traefik para MinIO
       - "traefik.docker.network=rede_proxy"
     networks:
       - rede_chatbot
@@ -121,13 +127,27 @@ services:
   minio_setup:
     image: minio/mc
     container_name: minio_setup
+    restart: "no"
     depends_on:
       - minio_chatbot
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASS: ${MINIO_ROOT_PASS}
-    entrypoint: >
-      /bin/sh -c " sleep 10; /usr/bin/mc alias set minio http://minio_chatbot:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASS}; /usr/bin/mc mb --ignore-existing minio/typebot; /usr/bin/mc anonymous set public minio/typebot/public; exit 0; "
+    entrypoint: |
+      /bin/sh -c "
+      sleep 10;
+      # 1. Configuramos o alias com aspas fortes para evitar erro de hostname
+      /usr/bin/mc alias set chatbot http://minio_chatbot:9000 \"$${MINIO_ROOT_USER}\" \"$${MINIO_ROOT_PASS}\";
+
+      # 2. Criamos o bucket usando o alias que acabamos de definir
+      /usr/bin/mc mb --ignore-existing chatbot/typebot;
+
+      # 3. Definimos a permissão
+      /usr/bin/mc anonymous set public chatbot/typebot;
+
+      echo 'Configuração finalizada com sucesso!';
+      exit 0;
+      "
     networks:
       - rede_chatbot
 
@@ -144,7 +164,9 @@ services:
       - evolution_instances:/evolution/instances
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.evolution_api.service=evolution_api"
       - "traefik.http.routers.evolution_api.rule=Host(`api-evolution.local`)"
+      - "traefik.http.routers.evolution_api.entrypoints=web"
       - "traefik.http.services.evolution_api.loadbalancer.server.port=8080"
       - "traefik.docker.network=rede_proxy"
 
@@ -158,7 +180,9 @@ services:
         condition: service_started
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.evolution_frontend.service=evolution_frontend"
       - "traefik.http.routers.evolution_frontend.rule=Host(`manager-evolution.local`)"
+      - "traefik.http.routers.evolution_frontend.entrypoints=web"
       - "traefik.http.services.evolution_frontend.loadbalancer.server.port=80"
       - "traefik.docker.network=rede_proxy"
     volumes:
@@ -176,7 +200,9 @@ services:
       - REDIS_URL=redis://:${REDIS_PASS}@redis_chatbot:6379/2
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.typebot_builder.service=typebot_builder"
       - "traefik.http.routers.typebot_builder.rule=Host(`builder-typebot.local`)"
+      - "traefik.http.routers.typebot_builder.entrypoints=web"
       - "traefik.http.services.typebot_builder.loadbalancer.server.port=3000"
       - "traefik.docker.network=rede_proxy"
 
@@ -190,7 +216,9 @@ services:
       - REDIS_URL=redis://:${REDIS_PASS}@redis_chatbot:6379/2
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.typebot_viewer.service=typebot_viewer"
       - "traefik.http.routers.typebot_viewer.rule=Host(`viewer-typebot.local`)"
+      - "traefik.http.routers.typebot_viewer.entrypoints=web"
       - "traefik.http.services.typebot_viewer.loadbalancer.server.port=3000"
       - "traefik.docker.network=rede_proxy"
 
@@ -212,8 +240,10 @@ services:
       - chatwoot_storage:/app/storage
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.chatwoot.rule=Host(`chatwoot.local`)"
-      - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
+      - "traefik.http.routers.chatwoot_rails.service=chatwoot_rails"
+      - "traefik.http.routers.chatwoot_rails.rule=Host(`chatwoot.local`)"
+      - "traefik.http.routers.chatwoot_rails.entrypoints=web"
+      - "traefik.http.services.chatwoot_rails.loadbalancer.server.port=3000"
       - "traefik.docker.network=rede_proxy"
 
   chatwoot_sidekiq:
@@ -240,7 +270,9 @@ services:
     <<: [ *base, *servicebase, *n8n_shared ]
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.n8n.service=n8n"
       - "traefik.http.routers.n8n.rule=Host(`n8n.local`)"
+      - "traefik.http.routers.n8n.entrypoints=web"
       - "traefik.http.services.n8n.loadbalancer.server.port=5678"
       - "traefik.docker.network=rede_proxy"
 
@@ -285,7 +317,9 @@ services:
       - TZ=America/Sao_Paulo
     labels:
       - "traefik.enable=true"
+      - "traefik.http.routers.mailpit.service=mailpit"
       - "traefik.http.routers.mailpit.rule=Host(`mail-chatbot.local`)"
+      - "traefik.http.routers.mailpit.entrypoints=web"
       - "traefik.http.services.mailpit.loadbalancer.server.port=8025"
       - "traefik.docker.network=rede_proxy"
 
@@ -294,9 +328,8 @@ networks:
   rede_chatbot:
     name: rede_chatbot
     internal: true
-    external: false
     driver: bridge
-    attachable: false
+    attachable: true
   rede_proxy:
     name: rede_proxy
     external: true
