@@ -1,7 +1,7 @@
 services:
   docops:
     image: or4cu1o/docops:beta
-    container_name: docops
+    container_name: docops-chatbot
     restart: unless-stopped
     environment:
       - DOCOPS_USER=admin
