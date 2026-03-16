@@ -347,9 +347,13 @@ if [[ "$USE_DOCOPS" =~ ^[Ss]$ ]]; then
     fi
 fi
 
-log "\n${GREEN}Iniciando *pull* de imagens e alocação de contêineres... (Progresso em tempo real)${NC}"
-
+log "\n${GREEN}Iniciando *pull* de imagens... (Progresso em tempo real)${NC}"
 eval "$COMPOSE_CMD pull" 2>&1 | tee -a "$LOG_PATH"
+
+log "\n${YELLOW}Preparando banco de dados do Chatwoot (Migrações e Seeds)...${NC}"
+eval "$COMPOSE_CMD run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare" 2>&1 | tee -a "$LOG_PATH"
+
+log "\n${GREEN}Iniciando a malha de serviços em background...${NC}"
 eval "$COMPOSE_CMD up -d" 2>&1 | tee -a "$LOG_PATH"
 
 # ==============================================================================
