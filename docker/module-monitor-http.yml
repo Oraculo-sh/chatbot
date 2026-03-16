@@ -1,0 +1,22 @@
+services:
+  docops:
+    image: or4cu1o/docops
+    container_name: docops
+    restart: unless-stopped
+    environment:
+      - DOCOPS_USER=admin
+      - DOCOPS_PASS=admin
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=rede_proxy"
+      - "traefik.http.routers.docops.service=docops"
+      - "traefik.http.routers.docops.rule=Host(`monitor.${DOMAIN}`)"
+      - "traefik.http.routers.docops.entrypoints=web"
+      - "traefik.http.services.docops.loadbalancer.server.port=8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    networks:
+      - rede_proxy

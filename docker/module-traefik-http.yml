@@ -1,8 +1,6 @@
-name: gateway
-
 services:
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3
     container_name: traefik-router
     restart: always
     command:
@@ -17,9 +15,3 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - rede_proxy
-
-networks:
-  rede_proxy:
-    name: rede_proxy
-    driver: bridge
-    attachable: true

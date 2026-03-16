@@ -1,5 +1,3 @@
-name: chatbot-ports
-
 services:
   minio-chatbot:
     ports:
