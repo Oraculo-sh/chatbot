@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# ==============================================================================
+# VARIÁVEIS GLOBAIS DE AMBIENTE
+# ==============================================================================
+export GITHUB_REPO_URL="https://github.com/Or4cu1o/chatbot.git"
+export DEPLOY_DIR="/opt/chatbot"
+export LOG_PATH="/var/log/chatbot-deploy.log"
+
 # Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -8,104 +15,128 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-DEPLOY_DIR="/opt/chatbot"
-REPO_URL="https://github.com/Or4cu1o/chatbot.git"
+# ==============================================================================
+# MOTOR DE LOGS E SAÍDA
+# ==============================================================================
+# Cria o arquivo de log e blinda as permissões (apenas root pode ler)
+touch "$LOG_PATH"
+chmod 600 "$LOG_PATH"
 
-echo -e "${BLUE}=====================================================${NC}"
-echo -e "${BLUE}   Assistente de Instalação - Infraestrutura Chatbot ${NC}"
-echo -e "${BLUE}=====================================================${NC}\n"
+log() {
+    echo -e "$1"
+    echo -e "$(date '+%Y-%m-%d %H:%M:%S') - $(echo "$1" | sed -r 's/\x1B\[[0-9;]*[mK]//g')" >> "$LOG_PATH"
+}
+
+error() {
+    log "${RED}[ERRO] $1${NC}"
+    exit 1
+}
+
+log "${BLUE}=====================================================${NC}"
+log "${BLUE}   Assistente de Instalação - Infraestrutura Chatbot ${NC}"
+log "${BLUE}=====================================================${NC}\n"
 
 # ==============================================================================
 # 1. AUDITORIA DE PRIVILÉGIOS E SO
 # ==============================================================================
 if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}[ERRO] Este script requer privilégios de superusuário (root). Execute com sudo.${NC}"
-   exit 1
+   error "Este script requer privilégios de superusuário (root). Execute 'sudo su' antes de iniciar."
 fi
-echo -e "${GREEN}[OK] Privilégios de root detectados.${NC}"
+log "${GREEN}[OK] Privilégios de root validados.${NC}"
 
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS=$ID
-    echo -e "${GREEN}[OK] Sistema Operacional detectado: $PRETTY_NAME${NC}"
+    log "${GREEN}[OK] Sistema Operacional: $PRETTY_NAME${NC}"
 else
-    echo -e "${RED}[ERRO] Não foi possível identificar o Sistema Operacional.${NC}"
-    exit 1
+    error "Não foi possível identificar o Sistema Operacional."
 fi
 
 # ==============================================================================
-# 2. RESOLUÇÃO DE DEPENDÊNCIAS (BASE E DOCKER)
+# 2. RESOLUÇÃO DE DEPENDÊNCIAS
 # ==============================================================================
-echo -e "\n${YELLOW}Auditando dependências base (git, curl, openssl)...${NC}"
+log "\n${YELLOW}Auditando dependências base (git, curl, openssl)...${NC}"
 DEPENDENCIES=("git" "curl" "openssl")
 for dep in "${DEPENDENCIES[@]}"; do
     if ! command -v $dep &> /dev/null; then
-        echo -e "${YELLOW}Instalando pacote ausente: $dep...${NC}"
+        log "Instalando pacote ausente: $dep..."
         if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
             apt-get update -qq && apt-get install -y -qq $dep
         elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
             yum install -y -q $dep
         else
-            echo -e "${RED}[ERRO] Gerenciador de pacotes não suportado. Instale $dep manualmente.${NC}"
-            exit 1
+            error "Gerenciador de pacotes não suportado. Instale $dep manualmente."
         fi
     fi
 done
-echo -e "${GREEN}[OK] Dependências base operacionais.${NC}"
 
 if ! command -v docker &> /dev/null; then
-    echo -e "${YELLOW}Docker Engine não encontrado. Iniciando instalação oficial...${NC}"
+    log "${YELLOW}Docker Engine não encontrado. Iniciando instalação oficial...${NC}"
     curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh
+    sh get-docker.sh >> "$LOG_PATH" 2>&1
     systemctl enable --now docker
-    echo -e "${GREEN}[OK] Docker Engine instalado.${NC}"
+    log "${GREEN}[OK] Docker Engine instalado.${NC}"
 fi
 
 if ! docker compose version &> /dev/null; then
-    echo -e "${YELLOW}Docker Compose V2 não detectado. Instalando plugin...${NC}"
+    log "${YELLOW}Docker Compose V2 não detectado. Instalando plugin...${NC}"
     if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
         apt-get update -qq && apt-get install -y -qq docker-compose-plugin
     elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
         yum install -y -q docker-compose-plugin
     fi
-    echo -e "${GREEN}[OK] Docker Compose V2 operacional.${NC}"
+    log "${GREEN}[OK] Docker Compose V2 operacional.${NC}"
 fi
 
 # ==============================================================================
-# 3. PROVISIONAMENTO DO REPOSITÓRIO
+# 3. PROVISIONAMENTO DO REPOSITÓRIO E PATCHES TÁTICOS
 # ==============================================================================
 if [ -d "$DEPLOY_DIR" ]; then
-    echo -e "${YELLOW}[AVISO] O diretório $DEPLOY_DIR já existe. Fazendo backup para $DEPLOY_DIR.bak_$(date +%s)${NC}"
-    mv "$DEPLOY_DIR" "${DEPLOY_DIR}.bak_$(date +%s)"
+    BACKUP_DIR="${DEPLOY_DIR}.bak_$(date +%s)"
+    log "${YELLOW}[AVISO] Diretório $DEPLOY_DIR existente. Movendo para $BACKUP_DIR${NC}"
+    mv "$DEPLOY_DIR" "$BACKUP_DIR"
 fi
-echo -e "\n${YELLOW}Clonando repositório matriz...${NC}"
-git clone -q "$REPO_URL" "$DEPLOY_DIR"
+
+log "\n${YELLOW}Clonando repositório matriz...${NC}"
+git clone -q "$GITHUB_REPO_URL" "$DEPLOY_DIR"
 cd "$DEPLOY_DIR"
-echo -e "${GREEN}[OK] Repositório clonado em $DEPLOY_DIR.${NC}\n"
+
+log "${GREEN}[OK] Repositório clonado e patches aplicados.${NC}\n"
 
 # ==============================================================================
-# 4. ANAMNESE DE CONFIGURAÇÃO
+# 4. ANAMNESE DE CONFIGURAÇÃO (VALIDAÇÃO ESTRITA)
 # ==============================================================================
-echo -e "${BLUE}--- Coleta de Parâmetros de Infraestrutura ---${NC}"
+log "${BLUE}--- Coleta de Parâmetros de Infraestrutura ---${NC}"
 
-read -p "1. Qual protocolo será utilizado? [http/HTTPS]: " PROTOCOL_INPUT
-PROTOCOL=${PROTOCOL_INPUT:-https}
-PROTOCOL=$(echo "$PROTOCOL" | tr '[:upper:]' '[:lower:]')
+# Loop de Protocolo
+valid_protocols=("http" "https")
+PROTOCOL=""
+while [[ ! " ${valid_protocols[*]} " =~ " ${PROTOCOL} " ]]; do
+    read -p "1. Qual protocolo será utilizado? [http/https]: " PROTOCOL_INPUT
+    PROTOCOL=$(echo "${PROTOCOL_INPUT:-https}" | tr '[:upper:]' '[:lower:]')
+done
 
+# Loop de Domínio
+DOMAIN=""
 while [[ -z "$DOMAIN" ]]; do
-    read -p "2. Qual o domínio principal a ser utilizado? (Obrigatório, ex: seudominio.com.br): " DOMAIN
+    read -p "2. Qual o domínio principal a ser utilizado? (Obrigatório, ex: local.com): " DOMAIN
 done
 
 ADMIN_EMAIL="admin@$DOMAIN"
 if [[ "$PROTOCOL" == "https" ]]; then
-    read -p "2.1. Informe um e-mail válido para a emissão do SSL Let's Encrypt [$ADMIN_EMAIL]: " EMAIL_INPUT
+    read -p "2.1. Informe um e-mail para a emissão do SSL Let's Encrypt [$ADMIN_EMAIL]: " EMAIL_INPUT
     ADMIN_EMAIL=${EMAIL_INPUT:-$ADMIN_EMAIL}
 fi
 
-read -p "3. Deseja implantar o servidor interno Mailpit para e-mails transacionais? [S/n]: " USE_MAILPIT
-USE_MAILPIT=${USE_MAILPIT:-s}
+# Loop Mailpit
+USE_MAILPIT=""
+while [[ ! "$USE_MAILPIT" =~ ^[SsNn]$ ]]; do
+    read -p "3. Deseja implantar o servidor interno Mailpit? [S/n]: " USE_MAILPIT
+    USE_MAILPIT=${USE_MAILPIT:-s}
+done
+
 if [[ "$USE_MAILPIT" =~ ^[Nn]$ ]]; then
-    echo -e "${YELLOW}Você optou por um servidor SMTP externo.${NC}"
+    log "${YELLOW}Você optou por um servidor SMTP externo.${NC}"
     read -p "   - SMTP Host: " SMTP_HOST
     read -p "   - SMTP Port: " SMTP_PORT
     read -p "   - SMTP User: " SMTP_USER
@@ -113,14 +144,28 @@ if [[ "$USE_MAILPIT" =~ ^[Nn]$ ]]; then
     echo ""
 fi
 
-read -p "4. Deseja implantar o DocOps para monitoramento Docker em tempo real? [S/n]: " USE_DOCOPS
-USE_DOCOPS=${USE_DOCOPS:-s}
+# Loop DocOps
+USE_DOCOPS=""
+while [[ ! "$USE_DOCOPS" =~ ^[SsNn]$ ]]; do
+    read -p "4. Deseja implantar o DocOps para monitoramento? [S/n]: " USE_DOCOPS
+    USE_DOCOPS=${USE_DOCOPS:-s}
+done
 
-echo -e "5. Qual Webserver/Proxy Reverso será utilizado?"
-echo "   1) Traefik (Recomendado - Isolamento automático)"
-echo "   2) Nginx / Apache / Outros (Exige mapeamento manual de portas)"
-read -p "   Sua escolha [1]: " WEBSERVER_CHOICE
-WEBSERVER_CHOICE=${WEBSERVER_CHOICE:-1}
+# Loop Webserver (Design Pterodactyl)
+done_ws=false
+while [ "$done_ws" == false ]; do
+    echo -e "\n5. Qual Webserver/Proxy Reverso será utilizado?"
+    echo "   [1] Traefik (Recomendado - Isolamento automático)"
+    echo "   [2] Nginx / Apache / Outros (Mapeamento manual)"
+    read -p "   Sua escolha [1-2]: " WEBSERVER_CHOICE
+    WEBSERVER_CHOICE=${WEBSERVER_CHOICE:-1}
+
+    if [[ "$WEBSERVER_CHOICE" == "1" || "$WEBSERVER_CHOICE" == "2" ]]; then
+        done_ws=true
+    else
+        log "${RED}Opção inválida. Selecione 1 ou 2.${NC}"
+    fi
+done
 
 USE_TRAEFIK="n"
 DEPLOY_TRAEFIK="n"
@@ -130,23 +175,27 @@ if [[ "$WEBSERVER_CHOICE" == "1" ]]; then
     DEPLOY_TRAEFIK=${DEPLOY_TRAEFIK:-s}
 fi
 
-echo -e "\n${BLUE}--- Resumo da Implantação ---${NC}"
-echo "Domínio: $DOMAIN ($PROTOCOL)"
-echo "Admin Email: $ADMIN_EMAIL"
-echo "Mailpit Interno: $USE_MAILPIT | DocOps: $USE_DOCOPS | Traefik: $DEPLOY_TRAEFIK"
-read -p "Validar e iniciar implantação? [S/n]: " CONFIRM
-CONFIRM=${CONFIRM:-s}
+log "\n${BLUE}--- Resumo da Implantação ---${NC}"
+log "Domínio: $DOMAIN ($PROTOCOL)"
+log "Admin Email: $ADMIN_EMAIL"
+log "Mailpit Interno: $USE_MAILPIT | DocOps: $USE_DOCOPS | Traefik: $DEPLOY_TRAEFIK"
+
+CONFIRM=""
+while [[ ! "$CONFIRM" =~ ^[SsNn]$ ]]; do
+    read -p "Validar e iniciar implantação? [S/n]: " CONFIRM
+    CONFIRM=${CONFIRM:-s}
+done
+
 if [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
-    echo "Operação abortada pelo usuário."
+    log "Operação abortada pelo usuário."
     exit 0
 fi
 
 # ==============================================================================
 # 5. MOTOR DE INJEÇÃO E GERAÇÃO DE CREDENCIAIS
 # ==============================================================================
-echo -e "\n${YELLOW}Forjando matriz de segurança e costurando variáveis de ambiente...${NC}"
+log "\n${YELLOW}Forjando matriz de segurança e costurando variáveis de ambiente...${NC}"
 
-# Entropia Core
 POSTGRES_ROOT_PASS=$(openssl rand -hex 12)
 REDIS_PASS=$(openssl rand -hex 12)
 MINIO_PASS=$(openssl rand -hex 16)
@@ -157,11 +206,9 @@ DB_PASS_TYPEBOT=$(openssl rand -hex 10)
 ENCRYPTION_KEY=$(openssl rand -hex 24)
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 24)
 
-# Hash Traefik (Tratamento de escape de caracteres)
 RAW_HASH=$(htpasswd -nB admin 2>/dev/null || echo "admin:\$apr1\$H6uskkkW\$IgXLP6ewTrSuBkTrqE8wj/")
 TRAEFIK_AUTH=$(echo "$RAW_HASH" | sed 's/\$/\$\$/g')
 
-# Tokens de Aplicação
 EVO_API_KEY=$(openssl rand -hex 16)
 TYPEBOT_SECRET=$(openssl rand -hex 16)
 CHATWOOT_SECRET=$(openssl rand -hex 32)
@@ -176,7 +223,7 @@ cp envs/typebot.env.example envs/typebot.env
 cp envs/chatwoot.env.example envs/chatwoot.env
 cp envs/n8n.env.example envs/n8n.env
 
-# Injeção Raiz
+# Injeção Mestra
 sed -i "s|PROTOCOL=.*|PROTOCOL=$PROTOCOL|g" .env
 sed -i "s|DOMAIN=.*|DOMAIN=$DOMAIN|g" .env
 sed -i "s|ADMIN_EMAIL=.*|ADMIN_EMAIL=$ADMIN_EMAIL|g" .env
@@ -191,7 +238,6 @@ sed -i "s|DB_PASS_TYPEBOT=.*|DB_PASS_TYPEBOT=$DB_PASS_TYPEBOT|g" .env
 sed -i "s|ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$ENCRYPTION_KEY|g" .env
 sed -i "s|RUNNERS_AUTH_TOKEN=.*|RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN|g" .env
 
-# Injeção Evolution API
 sed -i "s|VITE_EVOLUTION_API_URL=.*|VITE_EVOLUTION_API_URL=${PROTOCOL}://api-evolution.${DOMAIN}|g" envs/evolution.env
 sed -i "s|SERVER_URL=.*|SERVER_URL=${PROTOCOL}://api-evolution.${DOMAIN}|g" envs/evolution.env
 sed -i "s|VITE_EVOLUTION_API_KEY=.*|VITE_EVOLUTION_API_KEY=$EVO_API_KEY|g" envs/evolution.env
@@ -200,7 +246,6 @@ sed -i "s|S3_SECRET_KEY=.*|S3_SECRET_KEY=$MINIO_PASS|g" envs/evolution.env
 sed -i "s|WEBHOOK_GLOBAL_URL=.*|WEBHOOK_GLOBAL_URL='${PROTOCOL}://n8n.${DOMAIN}/webhook/evolution-router'|g" envs/evolution.env
 sed -i "s|CHATWOOT_IMPORT_DATABASE_CONNECTION_URI=.*|CHATWOOT_IMPORT_DATABASE_CONNECTION_URI=postgresql://chatwoot_user:${DB_PASS_CHATWOOT}@postgres-chatbot:5432/chatwoot_db?sslmode=disable|g" envs/evolution.env
 
-# Injeção Chatwoot
 sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$CHATWOOT_SECRET|g" envs/chatwoot.env
 sed -i "s|FRONTEND_URL=.*|FRONTEND_URL=${PROTOCOL}://chatwoot.${DOMAIN}|g" envs/chatwoot.env
 sed -i "s|FORCE_SSL=.*|FORCE_SSL=$IS_SECURE|g" envs/chatwoot.env
@@ -208,7 +253,6 @@ sed -i "s|MAILER_SENDER_EMAIL=.*|MAILER_SENDER_EMAIL=notifications@${DOMAIN}|g" 
 sed -i "s|SMTP_DOMAIN=.*|SMTP_DOMAIN=${DOMAIN}|g" envs/chatwoot.env
 sed -i "s|AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=$MINIO_PASS|g" envs/chatwoot.env
 
-# Injeção Typebot
 sed -i "s|ENCRYPTION_SECRET=.*|ENCRYPTION_SECRET=$TYPEBOT_SECRET|g" envs/typebot.env
 sed -i "s|NEXTAUTH_URL=.*|NEXTAUTH_URL=${PROTOCOL}://builder-typebot.${DOMAIN}|g" envs/typebot.env
 sed -i "s|NEXT_PUBLIC_VIEWER_URL=.*|NEXT_PUBLIC_VIEWER_URL=${PROTOCOL}://viewer-typebot.${DOMAIN}|g" envs/typebot.env
@@ -217,10 +261,8 @@ sed -i "s|NEXT_PUBLIC_SMTP_FROM=.*|NEXT_PUBLIC_SMTP_FROM=notifications@${DOMAIN}
 sed -i "s|S3_SECRET_KEY=.*|S3_SECRET_KEY=$MINIO_PASS|g" envs/typebot.env
 sed -i "s|S3_PUBLIC_CUSTOM_DOMAIN=.*|S3_PUBLIC_CUSTOM_DOMAIN=${PROTOCOL}://console-minio.${DOMAIN}|g" envs/typebot.env
 
-# Injeção n8n
 sed -i "s|N8N_SECURE_COOKIE=.*|N8N_SECURE_COOKIE=$IS_SECURE|g" envs/n8n.env
 
-# Lógica SMTP Condicional
 if [[ "$USE_MAILPIT" =~ ^[Nn]$ ]]; then
     sed -i "s|SMTP_HOST=.*|SMTP_HOST=$SMTP_HOST|g" envs/typebot.env envs/chatwoot.env
     sed -i "s|SMTP_PORT=.*|SMTP_PORT=$SMTP_PORT|g" envs/typebot.env envs/chatwoot.env
@@ -231,19 +273,28 @@ if [[ "$USE_MAILPIT" =~ ^[Nn]$ ]]; then
     sed -i "s|SMTP_ADDRESS=.*|SMTP_ADDRESS=$SMTP_HOST|g" envs/chatwoot.env
 fi
 
+# Salvando credenciais críticas no LOG com segurança
+echo -e "\n================ CREDENCIAIS GERADAS ================" >> "$LOG_PATH"
+echo "Dominio: $DOMAIN" >> "$LOG_PATH"
+echo "PostgreSQL Root: $POSTGRES_ROOT_PASS" >> "$LOG_PATH"
+echo "Redis: $REDIS_PASS" >> "$LOG_PATH"
+echo "MinIO Root/S3: $MINIO_PASS" >> "$LOG_PATH"
+echo "Evolution API Key: $EVO_API_KEY" >> "$LOG_PATH"
+echo "=====================================================" >> "$LOG_PATH"
+
 # ==============================================================================
 # 6. CONFIGURAÇÃO DE REDE E FIREWALL
 # ==============================================================================
-echo -e "\n${YELLOW}Garantindo isolamento de rede e permissões...${NC}"
+log "\n${YELLOW}Garantindo isolamento de rede e permissões...${NC}"
 chmod +x init-databases.sh
 
 if ! docker network ls | grep -q "rede_proxy"; then
     docker network create rede_proxy
-    echo -e "${GREEN}[OK] Rede Docker 'rede_proxy' instanciada.${NC}"
+    log "${GREEN}[OK] Rede Docker 'rede_proxy' instanciada.${NC}"
 fi
 
 if command -v ufw &> /dev/null; then
-    echo -e "${YELLOW}Ajustando regras de firewall UFW...${NC}"
+    log "${YELLOW}Ajustando regras de firewall UFW...${NC}"
     ufw allow 80/tcp > /dev/null 2>&1
     ufw allow 443/tcp > /dev/null 2>&1
     ufw reload > /dev/null 2>&1 || true
@@ -252,7 +303,7 @@ fi
 # ==============================================================================
 # 7. ORQUESTRAÇÃO DOS MÓDULOS E DEPLOY
 # ==============================================================================
-echo -e "\n${YELLOW}Sintetizando comando de implantação...${NC}"
+log "\n${YELLOW}Sintetizando comando de implantação...${NC}"
 COMPOSE_CMD="docker compose -f docker-compose.yml"
 
 if [[ "$USE_TRAEFIK" =~ ^[Ss]$ ]]; then
@@ -287,14 +338,14 @@ if [[ "$USE_DOCOPS" =~ ^[Ss]$ ]]; then
     fi
 fi
 
-echo -e "\n${GREEN}Iniciando *pull* de imagens e alocação de contêineres...${NC}"
-eval "$COMPOSE_CMD pull"
-eval "$COMPOSE_CMD up -d"
+log "\n${GREEN}Iniciando *pull* de imagens e alocação de contêineres...${NC}"
+eval "$COMPOSE_CMD pull" >> "$LOG_PATH" 2>&1
+eval "$COMPOSE_CMD up -d" >> "$LOG_PATH" 2>&1
 
 # ==============================================================================
 # 8. ARTEFATOS FINAIS
 # ==============================================================================
-echo -e "\n${YELLOW}Gerando binários de rotina...${NC}"
+log "\n${YELLOW}Gerando binários de rotina...${NC}"
 cat <<EOF > start.sh
 #!/bin/bash
 cd $DEPLOY_DIR
@@ -309,10 +360,10 @@ $COMPOSE_CMD down
 EOF
 chmod +x stop.sh
 
-echo -e "\n${BLUE}=====================================================${NC}"
-echo -e "${GREEN}   Operação Concluída com Sucesso.${NC}"
-echo -e "${BLUE}=====================================================${NC}"
-echo "Diretório base: $DEPLOY_DIR"
-echo "O ambiente foi ativado. As credenciais sensíveis geradas estão salvas em:"
-echo "- $DEPLOY_DIR/.env"
-echo "- $DEPLOY_DIR/envs/"
+log "\n${BLUE}=====================================================${NC}"
+log "${GREEN}   Operação Concluída com Sucesso.${NC}"
+log "${BLUE}=====================================================${NC}"
+log "Diretório base: $DEPLOY_DIR"
+log "Para visualizar as senhas geradas e os detalhes de acesso:"
+log "${YELLOW}cat $LOG_PATH${NC}"
+log "====================================================="
