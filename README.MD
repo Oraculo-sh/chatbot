@@ -41,7 +41,6 @@ Faça o download do script orquestrador e inicie o deploy interativo. O assisten
 wget [https://raw.githubusercontent.com/Or4cu1o/chatbot/main/deploy.sh](https://raw.githubusercontent.com/Or4cu1o/chatbot/main/deploy.sh)
 chmod +x deploy.sh
 sudo ./deploy.sh
-
 ```
 
 **3. URLs de Acesso**
@@ -63,13 +62,4 @@ Para iniciar ou parar a infraestrutura de forma segura após a instalação inic
 ```bash
 ./start.sh
 ./stop.sh
-
-```
-
-```
-
-O repositório agora possui uma fundação arquitetural sólida, scripts de implantação resilientes e documentação clara.
-
-A fase de infraestrutura está estabilizada. Deseja iniciar o mapeamento dos fluxos lógicos dentro do n8n para a orquestração do atendimento, ou encerramos este protocolo de configuração?
-
 ```
