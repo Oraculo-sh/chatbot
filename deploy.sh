@@ -2,11 +2,12 @@
 set -e
 set -o pipefail
 
-
-
 # ==============================================================================
-# VARIÁVEIS GLOBAIS DE AMBIENTE
+# IDENTIDADE E VARIÁVEIS GLOBAIS
 # ==============================================================================
+REAL_USER=${SUDO_USER:-$USER}
+REAL_PRIMARY_GROUP=$(id -gn "$REAL_USER")
+
 export GITHUB_REPO_URL="https://github.com/Or4cu1o/chatbot.git"
 export DEPLOY_DIR="/opt/chatbot"
 export LOG_PATH="/var/log/chatbot-deploy.log"
@@ -16,194 +17,105 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # ==============================================================================
-# MOTOR DE LOGS E SAÍDA
+# FUNÇÕES DE APOIO
 # ==============================================================================
-
-REAL_USER=${SUDO_USER:-$USER}
-REAL_PRIMARY_GROUP=$(id -gn "$REAL_USER")
-
-catch_error() {
-    local exit_code=$1
-    local line_number=$2
-    echo -e "\n${RED}[FALHA CRÍTICA] O script abortou na linha ${line_number} (Código de saída: ${exit_code}).${NC}"
-    echo -e "${YELLOW}A causa exata do erro está detalhada no terminal acima e salva no log: $LOG_PATH${NC}\n"
-}
-trap 'catch_error $? $LINENO' ERR
-
-touch "$LOG_PATH"
-chmod 600 "$LOG_PATH"
-
 log() {
     echo -e "$1"
     echo -e "$(date '+%Y-%m-%d %H:%M:%S') - $(echo "$1" | sed -r 's/\x1B\[[0-9;]*[mK]//g')" >> "$LOG_PATH"
 }
 
-error() {
-    log "${RED}[ERRO] $1${NC}"
-    exit 1
+catch_error() {
+    local exit_code=$1
+    local line_number=$2
+    log "\n${RED}[FALHA CRÍTICA] O script abortou na linha ${line_number} (Código de saída: ${exit_code}).${NC}"
+    log "${YELLOW}Verifique o log para detalhes: $LOG_PATH${NC}\n"
 }
-
-log "${BLUE}=====================================================${NC}"
-log "${BLUE}   Assistente de Instalação - Infraestrutura Chatbot ${NC}"
-log "${BLUE}=====================================================${NC}\n"
+trap 'catch_error $? $LINENO' ERR
 
 # ==============================================================================
-# 1. AUDITORIA DE PRIVILÉGIOS E SO
+# 1. PREPARAÇÃO DO AMBIENTE
 # ==============================================================================
 if [[ $EUID -ne 0 ]]; then
-   error "Este script requer privilégios de superusuário (root). Execute 'sudo su' antes de iniciar."
-fi
-log "${GREEN}[OK] Privilégios de root validados.${NC}"
-
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$ID
-    log "${GREEN}[OK] Sistema Operacional: $PRETTY_NAME${NC}"
-else
-    error "Não foi possível identificar o Sistema Operacional."
+   echo -e "${RED}Execute como root (sudo su).${NC}"
+   exit 1
 fi
 
-# ==============================================================================
-# 2. RESOLUÇÃO DE DEPENDÊNCIAS
-# ==============================================================================
-log "\n${YELLOW}Auditando dependências base (git, curl, openssl)...${NC}"
-DEPENDENCIES=("git" "curl" "openssl")
-for dep in "${DEPENDENCIES[@]}"; do
-    if ! command -v $dep &> /dev/null; then
-        log "Instalando pacote ausente: $dep..."
-        if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-            apt-get update -qq && apt-get install -y -qq $dep
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
-            yum install -y -q $dep
-        else
-            error "Gerenciador de pacotes não suportado. Instale $dep manualmente."
-        fi
-    fi
-done
+log "${BLUE}=====================================================${NC}"
+log "${BLUE}   Orquestrador de Compilação - Chatbot Stack        ${NC}"
+log "${BLUE}=====================================================${NC}\n"
 
-if ! command -v docker &> /dev/null; then
-    log "${YELLOW}Docker Engine não encontrado. Iniciando instalação oficial...${NC}"
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh >> "$LOG_PATH" 2>&1
-    systemctl enable --now docker
-    log "${GREEN}[OK] Docker Engine instalado.${NC}"
-fi
+# Instalação de dependências silenciada
+apt-get update -qq && apt-get install -y -qq git curl openssl sed > /dev/null 2>&1
 
-if ! docker compose version &> /dev/null; then
-    log "${YELLOW}Docker Compose V2 não detectado. Instalando plugin...${NC}"
-    if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
-        apt-get update -qq && apt-get install -y -qq docker-compose-plugin
-    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
-        yum install -y -q docker-compose-plugin
-    fi
-    log "${GREEN}[OK] Docker Compose V2 operacional.${NC}"
-fi
-
-# ==============================================================================
-# 3. PROVISIONAMENTO DO REPOSITÓRIO E PATCHES TÁTICOS
-# ==============================================================================
 if [ -d "$DEPLOY_DIR" ]; then
-    BACKUP_DIR="${DEPLOY_DIR}.bak_$(date +%s)"
-    log "${YELLOW}[AVISO] Diretório $DEPLOY_DIR existente. Movendo para $BACKUP_DIR${NC}"
-    mv "$DEPLOY_DIR" "$BACKUP_DIR"
+    rm -rf "${DEPLOY_DIR}.bak"
+    mv "$DEPLOY_DIR" "${DEPLOY_DIR}.bak"
 fi
 
-log "\n${YELLOW}Clonando repositório matriz...${NC}"
+log "${YELLOW}Clonando matriz de infraestrutura...${NC}"
 git clone -q "$GITHUB_REPO_URL" "$DEPLOY_DIR"
 cd "$DEPLOY_DIR"
 
-log "${GREEN}[OK] Repositório clonado e patches aplicados.${NC}\n"
-
 # ==============================================================================
-# 4. ANAMNESE DE CONFIGURAÇÃO (VALIDAÇÃO ESTRITA)
+# 2. ANAMNESE (COLETA DE DADOS)
 # ==============================================================================
-log "${BLUE}--- Coleta de Parâmetros de Infraestrutura ---${NC}"
+read -p "1. Domínio principal (ex: local.com): " DOMAIN
+read -p "2. Protocolo [http/https]: " PROTOCOL
+PROTOCOL=${PROTOCOL:-http}
 
-# Loop de Protocolo
-valid_protocols=("http" "https")
-PROTOCOL=""
-while [[ ! " ${valid_protocols[*]} " =~ " ${PROTOCOL} " ]]; do
-    read -p "1. Qual protocolo será utilizado? [http/https]: " PROTOCOL_INPUT
-    PROTOCOL=$(echo "${PROTOCOL_INPUT:-https}" | tr '[:upper:]' '[:lower:]')
-done
+USE_MAILPIT="n"
+read -p "3. Instalar Mailpit? [S/n]: " RESP; [[ "$RESP" =~ ^[Ss]$ || -z "$RESP" ]] && USE_MAILPIT="s"
 
-# Loop de Domínio
-DOMAIN=""
-while [[ -z "$DOMAIN" ]]; do
-    read -p "2. Qual o domínio principal a ser utilizado? (Obrigatório, ex: local.com): " DOMAIN
-done
-
-ADMIN_EMAIL="admin@$DOMAIN"
-if [[ "$PROTOCOL" == "https" ]]; then
-    read -p "2.1. Informe um e-mail para a emissão do SSL Let's Encrypt [$ADMIN_EMAIL]: " EMAIL_INPUT
-    ADMIN_EMAIL=${EMAIL_INPUT:-$ADMIN_EMAIL}
-fi
-
-# Loop Mailpit
-USE_MAILPIT=""
-while [[ ! "$USE_MAILPIT" =~ ^[SsNn]$ ]]; do
-    read -p "3. Deseja implantar o servidor interno Mailpit? [S/n]: " USE_MAILPIT
-    USE_MAILPIT=${USE_MAILPIT:-s}
-done
-
-if [[ "$USE_MAILPIT" =~ ^[Nn]$ ]]; then
-    log "${YELLOW}Você optou por um servidor SMTP externo.${NC}"
-    read -p "   - SMTP Host: " SMTP_HOST
-    read -p "   - SMTP Port: " SMTP_PORT
-    read -p "   - SMTP User: " SMTP_USER
-    read -s -p "   - SMTP Pass: " SMTP_PASS
-    echo ""
-fi
-
-# Loop DocOps
-USE_DOCOPS=""
-while [[ ! "$USE_DOCOPS" =~ ^[SsNn]$ ]]; do
-    read -p "4. Deseja implantar o DocOps para monitoramento? [S/n]: " USE_DOCOPS
-    USE_DOCOPS=${USE_DOCOPS:-s}
-done
-
-# Loop Webserver (Design Pterodactyl)
-done_ws=false
-while [ "$done_ws" == false ]; do
-    echo -e "\n5. Qual Webserver/Proxy Reverso será utilizado?"
-    echo "   [1] Traefik (Recomendado - Isolamento automático)"
-    echo "   [2] Nginx / Apache / Outros (Mapeamento manual)"
-    read -p "   Sua escolha [1-2]: " WEBSERVER_CHOICE
-    WEBSERVER_CHOICE=${WEBSERVER_CHOICE:-1}
-
-    if [[ "$WEBSERVER_CHOICE" == "1" || "$WEBSERVER_CHOICE" == "2" ]]; then
-        done_ws=true
-    else
-        log "${RED}Opção inválida. Selecione 1 ou 2.${NC}"
-    fi
-done
+USE_DOCOPS="n"
+read -p "4. Instalar DocOps? [S/n]: " RESP; [[ "$RESP" =~ ^[Ss]$ || -z "$RESP" ]] && USE_DOCOPS="s"
 
 USE_TRAEFIK="n"
-DEPLOY_TRAEFIK="n"
-if [[ "$WEBSERVER_CHOICE" == "1" ]]; then
+if [[ "$PROTOCOL" == "https" ]]; then
     USE_TRAEFIK="s"
-    read -p "   5.1. Deseja que o script instale e configure o Traefik agora? [S/n]: " DEPLOY_TRAEFIK
-    DEPLOY_TRAEFIK=${DEPLOY_TRAEFIK:-s}
+    log "${BLUE}HTTPS detectado. Traefik será incluído na síntese como Proxy Reverso.${NC}"
+else
+    read -p "5. Usar Traefik como Proxy (mesmo em HTTP)? [s/N]: " RESP; [[ "$RESP" =~ ^[Ss]$ ]] && USE_TRAEFIK="s"
 fi
 
-log "\n${BLUE}--- Resumo da Implantação ---${NC}"
-log "Domínio: $DOMAIN ($PROTOCOL)"
-log "Admin Email: $ADMIN_EMAIL"
-log "Mailpit Interno: $USE_MAILPIT | DocOps: $USE_DOCOPS | Traefik: $DEPLOY_TRAEFIK"
+# ==============================================================================
+# 3. MOTOR DE SÍNTESE YAML (O CORAÇÃO DO NOVO MÉTODO)
+# ==============================================================================
+log "\n${YELLOW}Iniciando síntese do manifesto final...${NC}"
 
-CONFIRM=""
-while [[ ! "$CONFIRM" =~ ^[SsNn]$ ]]; do
-    read -p "Validar e iniciar implantação? [S/n]: " CONFIRM
-    CONFIRM=${CONFIRM:-s}
-done
+# Começamos com a base
+COMPOSE_FILES=("-f" "docker/base-chatbot.yml")
 
-if [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
-    log "Operação abortada pelo usuário."
-    exit 0
+# Adicionamos os módulos baseados na escolha
+if [[ "$USE_TRAEFIK" == "s" ]]; then
+    if [[ "$PROTOCOL" == "https" ]]; then
+        COMPOSE_FILES+=("-f" "docker/module-traefik-ssl.yml" "-f" "docker/module-chatbot-ssl.yml")
+        [[ "$USE_MAILPIT" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-mailpit-ssl.yml")
+        [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-ssl.yml")
+    else
+        COMPOSE_FILES+=("-f" "docker/module-traefik-http.yml" "-f" "docker/module-chatbot-http.yml")
+        [[ "$USE_MAILPIT" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-mailpit-http.yml")
+        [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-http.yml")
+    fi
+else
+    # Mapeamento Direto de Portas
+    COMPOSE_FILES+=("-f" "docker/module-chatbot-ports.yml")
+    [[ "$USE_MAILPIT" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-mailpit-port.yml")
+    [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-port.yml")
 fi
+
+# GERAÇÃO DO DOCKER-COMPOSE.YML ÚNICO
+# O comando 'config' do docker compose mescla os arquivos e resolve as interpolações
+# Geramos o arquivo temporariamente para limpar o lixo de metadados depois
+docker compose "${COMPOSE_FILES[@]}" config > docker-compose.yml.tmp
+
+# Limpeza: Removemos as configurações de 'name' e 'pather' que o 'config' adiciona e que podem conflitar
+grep -v "name: chatbot" docker-compose.yml.tmp > docker-compose.yml
+rm docker-compose.yml.tmp
+
+log "${GREEN}[OK] Manifesto 'docker-compose.yml' sintetizado com sucesso na raiz.${NC}"
 
 # ==============================================================================
 # 5. MOTOR DE INJEÇÃO E GERAÇÃO DE CREDENCIAIS
@@ -315,87 +227,31 @@ if command -v ufw &> /dev/null; then
 fi
 
 # ==============================================================================
-# 7. ORQUESTRAÇÃO DOS MÓDULOS E DEPLOY
+# 5. EXECUÇÃO DA INFRAESTRUTURA
 # ==============================================================================
-log "\n${YELLOW}Sintetizando comando de implantação...${NC}"
-COMPOSE_CMD="docker compose -f docker-compose.yml"
+log "\n${GREEN}Iniciando deploy via manifesto consolidado...${NC}"
 
-if [[ "$USE_TRAEFIK" =~ ^[Ss]$ ]]; then
-    if [[ "$PROTOCOL" == "https" ]]; then
-        COMPOSE_CMD="$COMPOSE_CMD -f docker/module-chatbot-ssl.yml"
-        [[ "$DEPLOY_TRAEFIK" =~ ^[Ss]$ ]] && COMPOSE_CMD="$COMPOSE_CMD -f docker/module-traefik-ssl.yml"
-    else
-        COMPOSE_CMD="$COMPOSE_CMD -f docker/module-chatbot-http.yml"
-        [[ "$DEPLOY_TRAEFIK" =~ ^[Ss]$ ]] && COMPOSE_CMD="$COMPOSE_CMD -f docker/module-traefik-http.yml"
-    fi
-else
-    COMPOSE_CMD="$COMPOSE_CMD -f docker/module-chatbot-ports.yml"
-fi
+docker compose pull 2>&1 | tee -a "$LOG_PATH"
 
-if [[ "$USE_MAILPIT" =~ ^[Ss]$ ]]; then
-    if [[ "$USE_TRAEFIK" =~ ^[Nn]$ ]]; then
-        COMPOSE_CMD="$COMPOSE_CMD -f docker/module-mailpit-port.yml"
-    elif [[ "$PROTOCOL" == "https" ]]; then
-         COMPOSE_CMD="$COMPOSE_CMD -f docker/module-mailpit-ssl.yml"
-    else
-         COMPOSE_CMD="$COMPOSE_CMD -f docker/module-mailpit-http.yml"
-    fi
-fi
+log "\n${YELLOW}Preparando banco de dados do Chatwoot...${NC}"
+docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare 2>&1 | tee -a "$LOG_PATH"
 
-if [[ "$USE_DOCOPS" =~ ^[Ss]$ ]]; then
-    if [[ "$USE_TRAEFIK" =~ ^[Nn]$ ]]; then
-        COMPOSE_CMD="$COMPOSE_CMD -f docker/module-monitor-port.yml"
-    elif [[ "$PROTOCOL" == "https" ]]; then
-         COMPOSE_CMD="$COMPOSE_CMD -f docker/module-monitor-ssl.yml"
-    else
-         COMPOSE_CMD="$COMPOSE_CMD -f docker/module-monitor-http.yml"
-    fi
-fi
-
-log "\n${GREEN}Iniciando *pull* de imagens... (Progresso em tempo real)${NC}"
-eval "$COMPOSE_CMD pull" 2>&1 | tee -a "$LOG_PATH"
-
-log "\n${YELLOW}Preparando banco de dados do Chatwoot (Migrações e Seeds)...${NC}"
-eval "$COMPOSE_CMD run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare" 2>&1 | tee -a "$LOG_PATH"
-
-log "\n${GREEN}Iniciando a malha de serviços em background...${NC}"
-eval "$COMPOSE_CMD up -d" 2>&1 | tee -a "$LOG_PATH"
+docker compose up -d 2>&1 | tee -a "$LOG_PATH"
 
 # ==============================================================================
-# RESTAURAÇÃO DE PROPRIEDADE (NOVO)
+# 6. FINALIZAÇÃO E PERMISSÕES
 # ==============================================================================
-log "\n${YELLOW}Sincronizando permissões: Devolvendo propriedade para $REAL_USER...${NC}"
+log "\n${YELLOW}Ajustando propriedade dos arquivos para $REAL_USER...${NC}"
 chown -R "$REAL_USER":"$REAL_PRIMARY_GROUP" "$DEPLOY_DIR"
-
-# Garante que os logs de execução também sejam acessíveis para leitura
 chown "$REAL_USER":"$REAL_PRIMARY_GROUP" "$LOG_PATH"
-
-# Garante que os scripts permaneçam executáveis após a troca de dono
-chmod +x "$DEPLOY_DIR"/*.sh
-chmod +x "$DEPLOY_DIR"/scripts/*.sh 2>/dev/null || true
-
-
-# ==============================================================================
-# 8. ARTEFATOS FINAIS
-# ==============================================================================
-log "\n${YELLOW}Gerando binários de rotina...${NC}"
-cat <<EOF > start.sh
-#!/bin/bash
-cd $DEPLOY_DIR
-$COMPOSE_CMD up -d
-EOF
-chmod +x start.sh
-
-cat <<EOF > stop.sh
-#!/bin/bash
-cd $DEPLOY_DIR
-$COMPOSE_CMD down
-EOF
-chmod +x stop.sh
+chmod +x init-databases.sh
 
 log "\n${BLUE}=====================================================${NC}"
-log "${GREEN}   Operação Concluída com Sucesso.${NC}"
+log "${GREEN}   Implantação Finalizada com Sucesso.${NC}"
 log "${BLUE}=====================================================${NC}"
+log "Agora você pode usar comandos nativos como:"
+log "${YELLOW}docker compose ps${NC} ou ${YELLOW}docker compose logs -f${NC}"
+log "====================================================="
 log "Diretório base: $DEPLOY_DIR"
 
 log "\n${YELLOW}================ APONTAMENTOS DNS E URLs =================${NC}"
