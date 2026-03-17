@@ -378,7 +378,7 @@ else
     [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-port.yml")
 fi
 
-docker compose "${COMPOSE_FILES[@]}" config > docker-compose.yml.tmp
+docker compose --project-directory . "${COMPOSE_FILES[@]}" config > docker-compose.yml.tmp
 grep -v "name: chatbot" docker-compose.yml.tmp > docker-compose.yml
 rm docker-compose.yml.tmp
 log "${GREEN}docker-compose.yml montado com sucesso.${NC}"
