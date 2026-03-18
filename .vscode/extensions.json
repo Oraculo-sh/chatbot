@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "mikestead.dotenv",
+        "ms-azuretools.vscode-docker",
+        "ms-azuretools.vscode-containers",
+        "timonwong.shellcheck"
+    ]
+}

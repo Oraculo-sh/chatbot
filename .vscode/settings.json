@@ -1,0 +1,9 @@
+{
+  "files.associations": {
+    "**/models/*.yml": "dockercompose",
+    "**/models/*.yaml": "dockercompose"
+  },
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json": "**/models/*.yml"
+  }
+}
