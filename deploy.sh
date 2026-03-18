@@ -241,7 +241,7 @@ DB_PASS_TYPEBOT=$(openssl rand -hex 10)
 ENCRYPTION_KEY=$(openssl rand -hex 24)
 RUNNERS_AUTH_TOKEN=$(openssl rand -hex 24)
 EVO_API_KEY=$(openssl rand -hex 16)
-TYPEBOT_SECRET=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
+TYPEBOT_SECRET=$(openssl rand -base64 24 | tr -d '\n')
 CHATWOOT_SECRET=$(openssl rand -hex 32)
 TRAEFIK_AUTH="admin:\$\$apr1\$\$H6uskkkW\$\$IgXLP6ewTrSuBkTrqE8wj/" # admin:admin (default)
 
@@ -355,33 +355,76 @@ fi
 # ==============================================================================
 # 10. GERAÇÃO DO DOCKER-COMPOSE.YML
 # ==============================================================================
-log "\n${YELLOW}[8/10] Gerando docker-compose com base nas respostas...${NC}"
+log "\n${YELLOW}[8/10] Construindo docker-compose.yml via parse textual...${NC}"
 
-COMPOSE_FILES=("-f" "docker/base-chatbot.yml")
+cp models/base-chatbot.yml docker-compose.yml
 
+inject_core_service() {
+    local model="$1"
+    if [ ! -f "$model" ]; then return; fi
+    # Extrai tudo entre services: e a proxima raiz
+    local block
+    block=$(awk '/^services:/ {flag=1; next} flag && /^[a-z]+:/ {flag=0} flag {print}' "$model")
+    if [ -n "$block" ]; then
+        # Injeta logo antes de 'postgres-chatbot:'
+        awk -v b="$block" '
+            /^  postgres-chatbot:/ { print b; print; next }
+            { print }
+        ' docker-compose.yml > tmp.yml && mv tmp.yml docker-compose.yml
+    fi
+    # Injeta volumes auxiliares (se houver, caindo no final do arquivo na root volumes:)
+    local vblock
+    vblock=$(awk '/^volumes:/ {flag=1; next} flag && /^[a-z]+:/ {flag=0} flag {print}' "$model")
+    if [ -n "$vblock" ]; then
+        echo "$vblock" >> docker-compose.yml
+    fi
+}
+
+inject_service_properties() {
+    local model="$1"
+    if [ ! -f "$model" ]; then return; fi
+    local services
+    services=$(grep -E '^  [a-zA-Z0-9_-]+:' "$model" | tr -d ': ')
+    for srv in $services; do
+        local block
+        block=$(awk -v s="  $srv:" '$0 == s {flag=1; next} flag && /^  [a-zA-Z0-9_-]+:/ {flag=0; next} flag {print}' "$model")
+        if [ -n "$block" ]; then
+            awk -v s="  $srv:" -v b="$block" '
+                $0 == s { print; print b; next }
+                { print }
+            ' docker-compose.yml > tmp.yml && mv tmp.yml docker-compose.yml
+        fi
+    done
+}
+
+# 1. Injetar serviços nativos inteiros
 if [[ "$USE_TRAEFIK_MODULES" == "s" || "$USE_TRAEFIK_MODULES" == "custom" ]]; then
     if [[ "$PROTOCOL" == "https" ]]; then
-        [[ "$USE_TRAEFIK_MODULES" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-traefik-ssl.yml")
-        COMPOSE_FILES+=("-f" "docker/module-chatbot-ssl.yml")
-        [[ "$USE_MAILPIT" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-mailpit-ssl.yml")
-        [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-ssl.yml")
+        [[ "$USE_TRAEFIK_MODULES" == "s" ]] && inject_core_service "models/model-traefik-ssl.yml"
+        [[ "$USE_MAILPIT" == "s" ]] && inject_core_service "models/model-mailpit-ssl.yml"
+        [[ "$USE_DOCOPS" == "s" ]] && inject_core_service "models/model-monitor-ssl.yml"
     else
-        [[ "$USE_TRAEFIK_MODULES" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-traefik-http.yml")
-        COMPOSE_FILES+=("-f" "docker/module-chatbot-http.yml")
-        [[ "$USE_MAILPIT" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-mailpit-http.yml")
-        [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-http.yml")
+        [[ "$USE_TRAEFIK_MODULES" == "s" ]] && inject_core_service "models/model-traefik-http.yml"
+        [[ "$USE_MAILPIT" == "s" ]] && inject_core_service "models/model-mailpit-http.yml"
+        [[ "$USE_DOCOPS" == "s" ]] && inject_core_service "models/model-monitor-http.yml"
     fi
 else
-    # Exposição de portas via host para Nginx / Apache
-    COMPOSE_FILES+=("-f" "docker/module-chatbot-ports.yml")
-    [[ "$USE_MAILPIT" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-mailpit-port.yml")
-    [[ "$USE_DOCOPS" == "s" ]] && COMPOSE_FILES+=("-f" "docker/module-monitor-port.yml")
+    [[ "$USE_MAILPIT" == "s" ]] && inject_core_service "models/model-mailpit-port.yml"
+    [[ "$USE_DOCOPS" == "s" ]] && inject_core_service "models/model-monitor-port.yml"
 fi
 
-docker compose --project-directory . "${COMPOSE_FILES[@]}" config > docker-compose.yml.tmp
-grep -v "name: chatbot" docker-compose.yml.tmp > docker-compose.yml
-rm docker-compose.yml.tmp
-log "${GREEN}docker-compose.yml montado com sucesso.${NC}"
+# 2. Injetar sub-properties (portas ou labels TLS) dentro das raízes pré-existentes
+if [[ "$USE_TRAEFIK_MODULES" == "s" || "$USE_TRAEFIK_MODULES" == "custom" ]]; then
+    if [[ "$PROTOCOL" == "https" ]]; then
+        inject_service_properties "models/model-chatbot-ssl.yml"
+    else
+        inject_service_properties "models/model-chatbot-http.yml"
+    fi
+else
+    inject_service_properties "models/model-chatbot-ports.yml"
+fi
+
+log "${GREEN}docker-compose.yml montado nativamente com sucesso.${NC}"
 
 # ==============================================================================
 # FINALIZAÇÃO
