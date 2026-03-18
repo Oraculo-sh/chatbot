@@ -16,10 +16,11 @@ envs/*.env
 /traefik_certs/
 acme.json
 
-.vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
 start.sh
 stop.sh
+
+docker-compose.yml
