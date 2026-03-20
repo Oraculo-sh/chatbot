@@ -45,18 +45,34 @@ REAL_USER=${SUDO_USER:-$USER}
 REAL_PRIMARY_GROUP=$(id -gn "$REAL_USER")
 
 # ==============================================================================
-# 2. IDENTIDADE DO SISTEMA OPERACIONAL
+# 2. IDENTIDADE DO SISTEMA OPERACIONAL E HARDWARE
 # ==============================================================================
-log "${YELLOW}[1/10] Identificando Sistema Operacional...${NC}"
+log "\n${YELLOW}[1/10] Identificando Sistema Operacional...${NC}"
 if [ -f /etc/os-release ]; then
     # shellcheck source=/dev/null
     . /etc/os-release
+    OS_NAME=$PRETTY_NAME
     OS=$ID
-    log "Sistema detectado: $PRETTY_NAME"
 else
     log "${RED}Nao foi possivel detectar o sistema operacional! OS nao suportado.${NC}"
     exit 1
 fi
+
+HOSTNAME=$(hostname)
+CPU=$(nproc)
+RAM=$(free -h | awk '/^Mem:/ {print $2}')
+SWAP=$(free -h | awk '/^Swap:/ {print $2}')
+IP_LOCAL=$(hostname -I | awk '{print $1}')
+IP_PUBLICO=$(curl -sc /dev/null --max-time 3 ifconfig.me || echo "N/A")
+
+echo "OS: $OS_NAME"
+echo "HOSTNAME: $HOSTNAME"
+echo "CPU: $CPU vCPUs"
+echo "RAM: $RAM"
+echo "SWAP: $SWAP"
+echo "IP LOCAL: $IP_LOCAL"
+echo "IP PUBLICO: $IP_PUBLICO"
+echo ""
 
 # ==============================================================================
 # 3 e 4. DEPENDÊNCIAS (Verificação e Instalação)
@@ -128,101 +144,238 @@ log "${GREEN}Repositório clonado em $DEPLOY_DIR${NC}"
 # ==============================================================================
 log "\n${YELLOW}[4/10] Iniciando anamnese pre-deploy...${NC}"
 
-read -r -p "6.1. Protocolo [http/https] (padrão https): " PROTOCOL
-PROTOCOL=${PROTOCOL:-https}
-PROTOCOL=$(echo "$PROTOCOL" | tr '[:upper:]' '[:lower:]')
-
 while true; do
-    read -r -p "6.2. Qual domínio a ser usado? (ex: local.com) [Obrigatório]: " DOMAIN
-    if [ -n "$DOMAIN" ]; then
+    echo ""
+    echo "4.1. Qual Webserver você irá utilizar como Proxy Reverso?"
+    echo "   [1] Traefik (Recomendado/Padrão)"
+    echo "   [2] Apache"
+    echo "   [3] Nginx"
+    echo "   [4] Outros"
+    read -r -p "> Selecione uma Opção (1-4) [Padrão: 1]: " WEBSERVER_OPT
+    WEBSERVER_OPT=${WEBSERVER_OPT:-1}
+
+    USE_TRAEFIK_MODULES="s"
+    if [[ "$WEBSERVER_OPT" == "1" ]]; then
+        echo ""
+        echo "4.1.1. [Apenas Traefik] Deseja implantar o Traefik agora ou usar um já existente?"
+        echo "   [1] Implantar Traefik junto nesta infra"
+        echo "   [2] Usar Traefik já existente (Externo)"
+        read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " TRAEFIK_MODE
+        TRAEFIK_MODE=${TRAEFIK_MODE:-1}
+        if [[ "$TRAEFIK_MODE" == "2" ]]; then
+            USE_TRAEFIK_MODULES="custom"
+        fi
+    else
+        USE_TRAEFIK_MODULES="n"
+        echo ""
+        log "\n${YELLOW}4.1.2-4 [AVISO] Configuração Manual Necessária (Apache/Nginx/Outro)${NC}"
+        echo "Você escolheu um webserver externo. O deploy exportará apenas as portas."
+        echo "Você deverá configurar o roteamento manualmente. Portas exportadas:"
+        echo "  - n8n: 3001"
+        echo "  - chatwoot: 3000"
+        echo "  - typebot-builder: 3002"
+        echo "  - typebot-viewer: 3003"
+        echo "  - evolution-api: 3005"
+        echo "  - evolution-manager: 3004"
+        echo "  - minio-console: 9001"
+        echo "  - minio-api: 9000"
+        echo "  - mail-chatbot: 8025"
+        echo "  - monitor: 8000"
+        echo ""
+        read -r -p "Pressione ENTER para prosseguir..."
+    fi
+
+    echo ""
+    echo "4.2. Qual domínio principal será usado? [Obrigatório]"
+    while true; do
+        read -r -p "Digite um domínio valido (ex: domain.com): " DOMAIN
+        if [ -n "$DOMAIN" ]; then
+            break
+        else
+            echo -e "${RED}O domínio é obrigatório.${NC}"
+        fi
+    done
+
+    ADMIN_EMAIL="admin@$DOMAIN"
+    echo ""
+    
+    while true; do
+        echo "4.3. Qual Protocolo será usado para o domínio $DOMAIN?"
+        echo "   [1] HTTP (Sem criptografia, inseguro)"
+        echo "   [2] HTTPS (Requer certificado SSL/TLS)"
+        read -r -p "> Selecione uma Opção (1-2) [Padrão: 2]: " OPT_PROTO
+        OPT_PROTO=${OPT_PROTO:-2}
+        
+        if [[ "$OPT_PROTO" == "1" ]]; then
+            echo ""
+            echo "4.3.1. [AVISO] Confirmar uso de protocolo inseguro?"
+            echo "   [1] NÃO"
+            echo "   [2] SIM"
+            read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " OPT_INSECURE
+            OPT_INSECURE=${OPT_INSECURE:-1}
+            if [[ "$OPT_INSECURE" == "2" ]]; then
+                PROTOCOL="http"
+                SSL_MODE="none"
+                break
+            fi
+        else
+            PROTOCOL="https"
+            echo ""
+            echo "4.3.2. Como o certificado SSL será gerenciado?"
+            echo "   [1] Local (Automático - Let's Encrypt)"
+            echo "   [2] Externo (Cloudflare Flexible / AWS / DigitalOcean)"
+            echo "   [3] Híbrido (Cloudflare Full/Strict)"
+            echo "   [4] Manual (Informar diretório)"
+            read -r -p "> Selecione uma Opção (1-4) [Padrão: 1]: " SSL_MODE_OPT
+            SSL_MODE_OPT=${SSL_MODE_OPT:-1}
+            
+            if [[ "$SSL_MODE_OPT" == "1" ]]; then
+                SSL_MODE="local"
+                echo ""
+                echo "4.3.2.1.1. Qual o e-mail para avisos do Let's Encrypt?"
+                read -r -p "> Digite um e-mail valido (padrão: ${ADMIN_EMAIL}): " LETSENCRYPT_EMAIL
+                LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL:-$ADMIN_EMAIL}
+                
+                echo ""
+                echo "4.3.2.1.2. O DNS do domínio $DOMAIN já aponta para este IP? (s/n):"
+                echo "   [1] SIM # prossegue normalmente"
+                echo "   [2] NÃO # avisa que o Let's Encrypt falhará e lista os apontamentos necessários."
+                read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " DNS_OK_OPT
+                DNS_OK_OPT=${DNS_OK_OPT:-1}
+                if [[ "$DNS_OK_OPT" == "2" ]]; then
+                    echo ""
+                    log "${YELLOW}4.3.2.1.2.2 [AVISO] Realize os apontamentos nativos para os seguintes domínios, caso contrário o Let's Encrypt falhará:${NC}"
+                    echo ""
+                    echo "  - n8n.${DOMAIN}"
+                    echo "  - chatwoot.${DOMAIN}"
+                    echo "  - builder-typebot.${DOMAIN}"
+                    echo "  - viewer-typebot.${DOMAIN}"
+                    echo "  - api-evolution.${DOMAIN}"
+                    echo "  - manager-evolution.${DOMAIN}"
+                    echo "  - console-minio.${DOMAIN}"
+                    echo "  - s3-minio.${DOMAIN}"
+                    echo "  - mail-chatbot.${DOMAIN} (Se optar pelo Mailpit)"
+                    echo "  - monitor.${DOMAIN} (Se optar pelo DocOps)"
+                    echo ""
+                    read -r -p "Pressione ENTER para prosseguir ciente..."
+                fi
+            elif [[ "$SSL_MODE_OPT" == "2" ]]; then
+                SSL_MODE="external"
+            elif [[ "$SSL_MODE_OPT" == "3" ]]; then
+                SSL_MODE="hybrid"
+                echo ""
+                echo "4.3.2.3.1. Como deseja obter o certificado de origem?"
+                echo "   [1] Gerar auto-assinado pelo script"
+                echo "   [2] Colar \"Cloudflare Origin Certificate\""
+                echo "   [3] Usar Let's Encrypt"
+                read -r -p "> Selecione uma Opção (1-3) [Padrão: 3]: " HYBRID_OPT
+            else
+                SSL_MODE="manual"
+                echo ""
+                echo "4.3.2.4.a. Caminho completo do Certificado (.crt/.pem):"
+                read -r -p "> " SSL_CRT_PATH
+                echo "4.3.2.4.b. Caminho completo da Chave Privada (.key):"
+                read -r -p "> " SSL_KEY_PATH
+            fi
+            break
+        fi
+    done
+
+    echo ""
+    while true; do
+        echo "4.4. Servidor de E-mails:"
+        echo "   [1] Implantar Mailpit"
+        echo "   [2] Usar servidor próprio (SMTP externo)"
+        read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " MAIL_OPTION
+        MAIL_OPTION=${MAIL_OPTION:-1}
+
+        USE_MAILPIT="s"
+        if [[ "$MAIL_OPTION" == "2" ]]; then
+            USE_MAILPIT="n"
+            echo ""
+            log "${YELLOW}--- 4.4.1. Configuração SMTP Externo ---${NC}"
+            read -r -p "SMTP Host: " SMTP_HOST
+            read -r -p "SMTP Port: " SMTP_PORT
+            read -r -p "SMTP Usuario: " SMTP_USER
+            read -r -s -p "SMTP Senha: " SMTP_PASS
+            echo ""
+            read -r -p "Usar SSL/TLS? (s/n) [Padrão: s]: " SMTP_SECURE_RESP
+            [[ "$SMTP_SECURE_RESP" =~ ^[Nn]$ ]] && SMTP_SECURE="false" || SMTP_SECURE="true"
+            
+            echo ""
+            echo "4.4.1.1. Confirma as configurações de SMTP?"
+            echo "   [1] SIM (Prosseguir)"
+            echo "   [2] NÃO (Reiniciar 4.4)"
+            read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " CONFIRM_SMTP
+            if [[ "${CONFIRM_SMTP:-1}" == "1" ]]; then
+                break
+            fi
+        else
+            break
+        fi
+    done
+
+    echo ""
+    echo "4.5. Deseja implantar o DocOps para visibilidade em tempo real?"
+    echo "   [1] SIM"
+    echo "   [2] NÃO"
+    read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " DOCOPS_OPT
+    if [[ "${DOCOPS_OPT:-1}" == "2" ]]; then
+        USE_DOCOPS="n"
+    else
+        USE_DOCOPS="s"
+    fi
+
+    # ==============================================================================
+    # 7. CONFIRMAÇÃO DE DADOS MESTRE
+    # ==============================================================================
+    log "\n${YELLOW}[5/10] Resumo das Respostas...${NC}"
+    echo "--------------------------------------------------------"
+    
+    WEBSERVER_STR="Traefik"
+    if [[ "$USE_TRAEFIK_MODULES" == "custom" ]]; then
+        WEBSERVER_STR="Traefik (Externo)"
+    elif [[ "$USE_TRAEFIK_MODULES" == "n" ]]; then
+        WEBSERVER_STR="Externo Manual (Apache/Nginx/Outros)"
+    fi
+    echo "Webserver: $WEBSERVER_STR"
+    echo "Domínio: $DOMAIN"
+    
+    PROTO_STR="HTTP"
+    if [[ "$PROTOCOL" == "https" ]]; then
+        if [[ "$SSL_MODE" == "local" ]]; then PROTO_STR="HTTPS (Local Let's Encrypt)"
+        elif [[ "$SSL_MODE" == "external" ]]; then PROTO_STR="HTTPS (Externo Flexible)"
+        elif [[ "$SSL_MODE" == "hybrid" ]]; then PROTO_STR="HTTPS (Híbrido Origin)"
+        else PROTO_STR="HTTPS (Manual)"; fi
+    fi
+    echo "Protocolo: $PROTO_STR"
+    echo ""
+    if [[ "$USE_MAILPIT" == "n" ]]; then
+        echo "SMTP: Externo"
+        echo "  Host: $SMTP_HOST"
+        echo "  Port: $SMTP_PORT"
+        echo "  Usuario: $SMTP_USER"
+        echo "  Senha: ***"
+        echo "  Usar SSL/TLS?: $([[ "$SMTP_SECURE" == "true" ]] && echo "Sim" || echo "Não")"
+    else
+        echo "SMTP: Mailpit Implantado"
+    fi
+    echo ""
+    echo "DocOps: $([[ "$USE_DOCOPS" == "s" ]] && echo "Implantado" || echo "Não")"
+    echo "--------------------------------------------------------"
+    echo ""
+    
+    echo "5. Confirma que as configurações estão corretas para prosseguir?"
+    echo "   [1] SIM (Iniciar Deploy)"
+    echo "   [2] NÃO (Reiniciar Anamnese)"
+    read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " FINAL_CONFIRM
+    
+    if [[ "${FINAL_CONFIRM:-1}" == "1" ]]; then
         break
     else
-        echo -e "${RED}O domínio é obrigatório.${NC}"
+        log "\n${RED}Reiniciando Anamnese a pedido do usuário...${NC}\n"
     fi
 done
-
-ADMIN_EMAIL="admin@$DOMAIN"
-
-echo "6.3. Servidor de E-mails para o Typebot e Chatwoot:"
-echo "   [1] Implantar Mailpit (servidor interno de e-mails)"
-echo "   [2] Usar servidor próprio (SMTP externo)"
-read -r -p "Opção interna (1 ou 2) [Padrão: 1]: " MAIL_OPTION
-MAIL_OPTION=${MAIL_OPTION:-1}
-
-USE_MAILPIT="s"
-if [ "$MAIL_OPTION" == "2" ]; then
-    USE_MAILPIT="n"
-    log "\n${YELLOW}--- Configuração SMTP Próprio ---${NC}"
-    read -r -p "SMTP Host (ex: smtp.gmail.com): " SMTP_HOST
-    read -r -p "SMTP Port (ex: 465, 587): " SMTP_PORT
-    read -r -p "SMTP Usuario/Email: " SMTP_USER
-    read -r -s -p "SMTP Senha: " SMTP_PASS
-    echo ""
-    read -r -p "Usar conexão Segura/SSL/TLS? (s/n) [Padrão: s]: " SMTP_SECURE_RESP
-    [[ "$SMTP_SECURE_RESP" =~ ^[Nn]$ ]] && SMTP_SECURE="false" || SMTP_SECURE="true"
-    
-    log "\n${GREEN}[Instruções]: Os dados do SMTP externo serão injetados nos arquivos de ambiente do Typebot e Chatwoot.${NC}"
-fi
-
-read -r -p "6.4. Deseja implantar o DocOps para visibilidade em tempo real? [S/n]: " RESP_DOCOPS
-[[ "$RESP_DOCOPS" =~ ^[Nn]$ ]] && USE_DOCOPS="n" || USE_DOCOPS="s"
-
-echo "6.5. Qual Webserver você irá utilizar como Proxy Reverso?"
-echo "   [1] Traefik (Recomendado/Padrão)"
-echo "   [2] Apache"
-echo "   [3] Nginx"
-echo "   [4] Outros"
-read -r -p "Opção (1-4) [Padrão: 1]: " WEBSERVER_OPT
-WEBSERVER_OPT=${WEBSERVER_OPT:-1}
-
-USE_TRAEFIK_MODULES="s"
-case $WEBSERVER_OPT in
-    2|3|4)
-        USE_TRAEFIK_MODULES="n"
-        log "\n${YELLOW}[AVISO] Configuração Manual Necessária (${NC}Apache/Nginx/Outro${YELLOW})${NC}"
-        log "Você escolheu um webserver externo. O deploy exportará apenas as portas."
-        log "Você deverá configurar o roteamento manualmente. Portas exportadas:"
-        log "  - n8n: 5678"
-        log "  - chatwoot: 3000"
-        log "  - typebot builder: 8080"
-        log "  - typebot viewer: 8081"
-        log "  - evolution api: 8082"
-        log "  - evolution manager: 8083"
-        log "  - minio console: 9001"
-        log "  - minio api: 9000"
-        [[ "$USE_MAILPIT" == "s" ]] && log "  - mailpit: 8025"
-        [[ "$USE_DOCOPS" == "s" ]] && log "  - docops: 8888"
-        ;;
-    *)
-        read -r -p "6.5.2.2.1. Deseja implantar o Traefik junto nesta infra, ou usar um Traefik próprio isolado? [1=Junto, 2=Próprio] [Padrão: 1]: " TRAEFIK_MODE
-        TRAEFIK_MODE=${TRAEFIK_MODE:-1}
-        if [ "$TRAEFIK_MODE" == "2" ]; then
-            USE_TRAEFIK_MODULES="custom"
-            log "\n${YELLOW}[AVISO] Traefik Externo.${NC}"
-            log "As aplicações utilizarão etiquetas (labels) do Traefik."
-            log "Certifique-se de que o seu Traefik tem acesso à rede docker 'rede_proxy'"
-            log "e que observa corretamente essa rede."
-        fi
-        ;;
-esac
-
-# ==============================================================================
-# 7. CONFIRMAÇÃO DE DADOS
-# ==============================================================================
-log "\n${YELLOW}[5/10] Resumo das Respostas...${NC}"
-echo "--------------------------------------------------------"
-echo "Dominio: $DOMAIN"
-echo "Protocolo: $PROTOCOL"
-echo "Mailpit: $([[ "$USE_MAILPIT" == "s" ]] && echo "Sim" || echo "Não (SMTP Externo)")"
-echo "DocOps: $([[ "$USE_DOCOPS" == "s" ]] && echo "Sim" || echo "Não")"
-echo "Webserver: $([[ "$USE_TRAEFIK_MODULES" == "n" ]] && echo "Externo Manual" || echo "Traefik")"
-echo "--------------------------------------------------------"
-
-read -r -p "7. Confirma que as configurações estão corretas para prosseguir? [S/n]: " RESP_CONFIRM
-if [[ "$RESP_CONFIRM" =~ ^[Nn]$ ]]; then
-    log "${RED}Deploy abortado pelo usuário.${NC}"
-    exit 0
-fi
 
 # ==============================================================================
 # 8. GERAÇÃO DOS ARQUIVOS DE AMBIENTE (.env)
@@ -276,6 +429,13 @@ sed -i "s|^DB_PASS_CHATWOOT=.*|DB_PASS_CHATWOOT=$DB_PASS_CHATWOOT|g" .env
 sed -i "s|^DB_PASS_TYPEBOT=.*|DB_PASS_TYPEBOT=$DB_PASS_TYPEBOT|g" .env
 sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$ENCRYPTION_KEY|g" .env
 sed -i "s|^RUNNERS_AUTH_TOKEN=.*|RUNNERS_AUTH_TOKEN=$RUNNERS_AUTH_TOKEN|g" .env
+
+# Lógica de SSL Avançada (Exportando vars capturadas na anamnese avançada do UX)
+echo "SSL_MODE=$SSL_MODE" >> .env
+[[ "$SSL_MODE" == "local" ]] && echo "LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL" >> .env
+[[ "$SSL_MODE" == "hybrid" ]] && echo "HYBRID_OPT=$HYBRID_OPT" >> .env
+[[ "$SSL_MODE" == "manual" ]] && echo "SSL_CRT_PATH=$SSL_CRT_PATH" >> .env
+[[ "$SSL_MODE" == "manual" ]] && echo "SSL_KEY_PATH=$SSL_KEY_PATH" >> .env
 
 # Variáveis dependentes
 # Evolution
