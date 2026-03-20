@@ -58,7 +58,7 @@ services:
       DB_PASS_TYPEBOT: ${DB_PASS_TYPEBOT}
     command: [ "postgres", "-c", "max_connections=1000", "-c", "shared_buffers=512MB" ]
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_ROOT_PASS} -d ${POSTGRES_ROOT_DB}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_ROOT_USER} -d ${POSTGRES_ROOT_DB}" ]
       interval: 5s
       timeout: 5s
       retries: 5
