@@ -24,3 +24,6 @@ start.sh
 stop.sh
 
 docker-compose.yml
+instrucoes_acesso.txt
+**/*.log
+*.log
