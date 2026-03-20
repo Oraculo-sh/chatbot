@@ -610,11 +610,32 @@ chown -R "$REAL_USER":"$REAL_PRIMARY_GROUP" "$DEPLOY_DIR"
 chown "$REAL_USER":"$REAL_PRIMARY_GROUP" "$LOG_PATH"
 log "${GREEN}Permissões ajustadas com sucesso para o usuário ${REAL_USER}.${NC}"
 
-log "\n${YELLOW}[10/10] Baixando imagens (pull) e preparando banco do Chatwoot...${NC}"
-# Forçando TTY explícito no pull prévio para preservar as barras de progresso
-docker compose pull --ignore-pull-failures 
+log "\n${YELLOW}[10/10] Baixando imagens em grupos para proteger a integridade da rede...${NC}"
 
-# Preparando o banco de dados (as imagens já estão cacheadas, logo não quebra a tela)
+log "-> Lote 1/5 [Núcleo Automação]: n8n e PostgreSQL (Base Pesada)..."
+docker compose pull n8n-chatbot postgres-chatbot
+
+log "-> Lote 2/5 [Núcleo CRM]: Chatwoot (Base Pesada c/ Camadas Compartilhadas)..."
+docker compose pull chatwoot-rails chatwoot-sidekiq chatwoot-web
+
+log "-> Lote 3/5 [Núcleo Builder]: Typebot (Base Pesada c/ Camadas Compartilhadas)..."
+docker compose pull builder-typebot viewer-typebot
+
+log "-> Lote 4/5 [Data & APIs]: Evolution, Redis e MinIO (Serviços Leves)..."
+docker compose pull api-evolution manager-evolution redis-chatbot minio-chatbot
+
+log "-> Lote 5/5 [Opcionais]: Proxy e Ferramentas (Micro-serviços)..."
+OPTIONAL_SERVICES=""
+[[ "$USE_TRAEFIK_MODULES" == "s" ]] && OPTIONAL_SERVICES="traefik-router"
+[[ "$USE_MAILPIT" == "s" ]] && OPTIONAL_SERVICES="$OPTIONAL_SERVICES mailpit-chatbot"
+[[ "$USE_DOCOPS" == "s" ]] && OPTIONAL_SERVICES="$OPTIONAL_SERVICES docops"
+
+if [ -n "$OPTIONAL_SERVICES" ]; then
+    # shellcheck disable=SC2086
+    docker compose pull $OPTIONAL_SERVICES
+fi
+
+# Preparando o banco de dados (as imagens já estão cacheadas agrupadas, logo não quebra a tela)
 log "\nProcessando as instâncias estruturais..."
 docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare
 # Geração de Instruções de Acesso
