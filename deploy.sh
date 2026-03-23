@@ -109,8 +109,8 @@ detect_system() {
 
     HOSTNAME=$(hostname)
     CPU=$(nproc)
-    RAM=$(free -h | awk '/^Mem:/ {print $2}')
-    SWAP=$(free -h | awk '/^Swap:/ {print $2}')
+    RAM=$(free -b | awk 'NR==2 {printf "%.1fGi", $2/1073741824}')
+    SWAP=$(free -b | awk 'NR==3 {printf "%.1fGi", $2/1073741824}')
     IP_LOCAL=$(hostname -I | awk '{print $1}')
     IP_PUBLICO=$(curl -sc /dev/null --max-time 5 ifconfig.me 2>/dev/null || echo "N/A")
     DISK_FREE_GB=$(df -BG / | awk 'NR==2 {gsub("G","",$4); print $4}')
@@ -226,6 +226,34 @@ clone_repository() {
     fi
 }
 
+# ------------------------------------------------------------------------------
+# ask VAR DEFAULT VALID_OPTIONS PROMPT
+# Exibe PROMPT, lê a entrada do usuário e valida contra VALID_OPTIONS (string
+# separada por espaços). Repete até receber uma opção válida.
+# Uso: ask VAR_NAME "1" "1 2 3" "Selecione (1-3):"
+# ------------------------------------------------------------------------------
+ask() {
+    local _var="$1"
+    local _default="$2"
+    local _valid="$3"   # ex: "1 2 3 4"
+    local _prompt="$4"
+    local _input
+
+    while true; do
+        read -r -p "> ${_prompt} [Padrão: ${_default}]: " _input
+        _input="${_input:-$_default}"
+        local _ok=0
+        for _opt in $_valid; do
+            [[ "$_input" == "$_opt" ]] && _ok=1 && break
+        done
+        if [[ "$_ok" -eq 1 ]]; then
+            printf -v "$_var" '%s' "$_input"
+            return
+        fi
+        echo -e "${RED}  Opção inválida: \"$_input\". Escolha uma das opções: $_valid${NC}"
+    done
+}
+
 # ==============================================================================
 # 6. ANAMNESE PRE-DEPLOY
 # ==============================================================================
@@ -239,8 +267,7 @@ run_anamnesis() {
         echo "   [2] Apache"
         echo "   [3] Nginx"
         echo "   [4] Outros"
-        read -r -p "> Selecione uma Opção (1-4) [Padrão: 1]: " WEBSERVER_OPT
-        WEBSERVER_OPT=${WEBSERVER_OPT:-1}
+        ask WEBSERVER_OPT "1" "1 2 3 4" "Selecione uma Opção (1-4)"
 
         USE_TRAEFIK_MODULES="s"
         if [[ "$WEBSERVER_OPT" == "1" ]]; then
@@ -248,8 +275,7 @@ run_anamnesis() {
             echo "4.1.1. [Apenas Traefik] Deseja implantar o Traefik agora ou usar um já existente?"
             echo "   [1] Implantar Traefik junto nesta infra"
             echo "   [2] Usar Traefik já existente (Externo)"
-            read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " TRAEFIK_MODE
-            TRAEFIK_MODE=${TRAEFIK_MODE:-1}
+            ask TRAEFIK_MODE "1" "1 2" "Selecione uma Opção (1-2)"
             if [[ "$TRAEFIK_MODE" == "2" ]]; then
                 USE_TRAEFIK_MODULES="custom"
             fi
@@ -303,16 +329,14 @@ run_anamnesis() {
             echo "4.3. Qual Protocolo será usado para o domínio $DOMAIN?"
             echo "   [1] HTTP (Sem criptografia, inseguro)"
             echo "   [2] HTTPS (Requer certificado SSL/TLS)"
-            read -r -p "> Selecione uma Opção (1-2) [Padrão: 2]: " OPT_PROTO
-            OPT_PROTO=${OPT_PROTO:-2}
+            ask OPT_PROTO "2" "1 2" "Selecione uma Opção (1-2)"
 
             if [[ "$OPT_PROTO" == "1" ]]; then
                 echo ""
                 echo "4.3.1. [AVISO] Confirmar uso de protocolo inseguro?"
                 echo "   [1] NÃO"
                 echo "   [2] SIM"
-                read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " OPT_INSECURE
-                OPT_INSECURE=${OPT_INSECURE:-1}
+                ask OPT_INSECURE "1" "1 2" "Selecione uma Opção (1-2)"
                 if [[ "$OPT_INSECURE" == "2" ]]; then
                     PROTOCOL="http"
                     SSL_MODE="none"
@@ -326,8 +350,7 @@ run_anamnesis() {
                 echo "   [2] Externo (Cloudflare Flexible / AWS / DigitalOcean)"
                 echo "   [3] Híbrido (Cloudflare Full/Strict)"
                 echo "   [4] Manual (Informar diretório)"
-                read -r -p "> Selecione uma Opção (1-4) [Padrão: 1]: " SSL_MODE_OPT
-                SSL_MODE_OPT=${SSL_MODE_OPT:-1}
+                ask SSL_MODE_OPT "1" "1 2 3 4" "Selecione uma Opção (1-4)"
 
                 if [[ "$SSL_MODE_OPT" == "1" ]]; then
                     SSL_MODE="local"
@@ -340,8 +363,7 @@ run_anamnesis() {
                     echo "4.3.2.1.2. O DNS do domínio $DOMAIN já aponta para este IP? (s/n):"
                     echo "   [1] SIM # prossegue normalmente"
                     echo "   [2] NÃO # avisa que o Let's Encrypt falhará e lista os apontamentos necessários."
-                    read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " DNS_OK_OPT
-                    DNS_OK_OPT=${DNS_OK_OPT:-1}
+                    ask DNS_OK_OPT "1" "1 2" "Selecione uma Opção (1-2)"
                     if [[ "$DNS_OK_OPT" == "2" ]]; then
                         echo ""
                         log "${YELLOW}4.3.2.1.2.2 [AVISO] Realize os apontamentos nativos para os seguintes domínios, caso contrário o Let's Encrypt falhará:${NC}"
@@ -368,8 +390,7 @@ run_anamnesis() {
                     echo "   [1] Gerar auto-assinado pelo script"
                     echo "   [2] Colar \"Cloudflare Origin Certificate\""
                     echo "   [3] Usar Let's Encrypt"
-                    read -r -p "> Selecione uma Opção (1-3) [Padrão: 3]: " HYBRID_OPT
-                    HYBRID_OPT=${HYBRID_OPT:-3}
+                    ask HYBRID_OPT "3" "1 2 3" "Selecione uma Opção (1-3)"
                 else
                     SSL_MODE="manual"
                     echo ""
@@ -387,8 +408,7 @@ run_anamnesis() {
             echo "4.4. Servidor de E-mails:"
             echo "   [1] Implantar Mailpit"
             echo "   [2] Usar servidor próprio (SMTP externo)"
-            read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " MAIL_OPTION
-            MAIL_OPTION=${MAIL_OPTION:-1}
+            ask MAIL_OPTION "1" "1 2" "Selecione uma Opção (1-2)"
 
             USE_MAILPIT="s"
             if [[ "$MAIL_OPTION" == "2" ]]; then
@@ -407,8 +427,8 @@ run_anamnesis() {
                 echo "4.4.1.1. Confirma as configurações de SMTP?"
                 echo "   [1] SIM (Prosseguir)"
                 echo "   [2] NÃO (Reiniciar 4.4)"
-                read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " CONFIRM_SMTP
-                if [[ "${CONFIRM_SMTP:-1}" == "1" ]]; then
+                ask CONFIRM_SMTP "1" "1 2" "Selecione uma Opção (1-2)"
+                if [[ "$CONFIRM_SMTP" == "1" ]]; then
                     break
                 fi
             else
@@ -420,8 +440,8 @@ run_anamnesis() {
         echo "4.5. Deseja implantar o DocOps para visibilidade em tempo real?"
         echo "   [1] SIM"
         echo "   [2] NÃO"
-        read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " DOCOPS_OPT
-        if [[ "${DOCOPS_OPT:-1}" == "2" ]]; then
+        ask DOCOPS_OPT "1" "1 2" "Selecione uma Opção (1-2)"
+        if [[ "$DOCOPS_OPT" == "2" ]]; then
             USE_DOCOPS="n"
         else
             USE_DOCOPS="s"
@@ -469,9 +489,9 @@ run_anamnesis() {
         echo "5. Confirma que as configurações estão corretas para prosseguir?"
         echo "   [1] SIM (Iniciar Deploy)"
         echo "   [2] NÃO (Reiniciar Anamnese)"
-        read -r -p "> Selecione uma Opção (1-2) [Padrão: 1]: " FINAL_CONFIRM
+        ask FINAL_CONFIRM "1" "1 2" "Selecione uma Opção (1-2)"
 
-        if [[ "${FINAL_CONFIRM:-1}" == "1" ]]; then
+        if [[ "$FINAL_CONFIRM" == "1" ]]; then
             break
         else
             log "\n${RED}Reiniciando Anamnese a pedido do usuário...${NC}\n"
@@ -790,8 +810,8 @@ set_permissions() {
 pull_with_retry() {
     local label="$1"
     shift
-    local max_retries=3
-    local wait_secs=10
+    local max_retries=5
+    local wait_secs=15
     local count=0
 
     while [ $count -lt $max_retries ]; do
@@ -816,23 +836,23 @@ pull_with_retry() {
 pull_images() {
     log "\n${YELLOW}[10/10] Baixando imagens em grupos para proteger a integridade da rede...${NC}"
 
-    log "-> Lote 1/5 [Núcleo Automação]: n8n e PostgreSQL (Base Pesada)..."
-    pull_with_retry "Núcleo Automação" n8n postgres-chatbot redis-chatbot minio-chatbot
+    log "-> Lote 1/5: n8n, PostgreSQL, Redis, MinIO..."
+    pull_with_retry "PULL 1/5" n8n postgres-chatbot redis-chatbot minio-chatbot
     sleep 3
 
-    log "-> Lote 2/5 [Núcleo CRM]: Chatwoot (Base Pesada c/ Camadas Compartilhadas)..."
-    pull_with_retry "Núcleo CRM" chatwoot-rails chatwoot-sidekiq
+    log "-> Lote 2/5: Chatwoot..."
+    pull_with_retry "PULL 2/5" chatwoot-rails chatwoot-sidekiq
     sleep 3
 
-    log "-> Lote 3/5 [Núcleo Builder]: Typebot (Base Pesada c/ Camadas Compartilhadas)..."
-    pull_with_retry "Núcleo Builder" typebot-builder typebot-viewer
+    log "-> Lote 3/5: Typebot..."
+    pull_with_retry "PULL 3/5" typebot-builder typebot-viewer
     sleep 3
 
-    log "-> Lote 4/5 [Data & APIs]: Evolution (Serviços Leves)..."
-    pull_with_retry "Data & APIs" evolution-api evolution-frontend
+    log "-> Lote 4/5: Evolution..."
+    pull_with_retry "PULL 4/5" evolution-api evolution-frontend
     sleep 3
 
-    log "-> Lote 5/5 [Opcionais]: Proxy e Ferramentas (Micro-serviços)..."
+    log "-> Lote 5/5: Opcionais..."
     OPTIONAL_SERVICES=""
     [[ "$USE_TRAEFIK_MODULES" == "s" ]] && OPTIONAL_SERVICES="traefik"
     [[ "$USE_MAILPIT" == "s" ]] && OPTIONAL_SERVICES="$OPTIONAL_SERVICES mailpit-chatbot"
@@ -848,10 +868,30 @@ pull_images() {
 # 13. PREPARAÇÃO DO BANCO DE DADOS
 # ==============================================================================
 prepare_databases() {
-    # Preparando o banco de dados (as imagens já estão cacheadas agrupadas, logo não quebra a tela)
     log "\nProcessando as instâncias estruturais..."
-    docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare
-    log_ok "Banco de dados do Chatwoot preparado."
+    log_info "Executando db:chatwoot_prepare (isso pode levar alguns minutos)..."
+
+    local db_log
+    local db_exit
+
+    # Captura stdout+stderr juntos e preserva o exit code
+    db_log=$(docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare 2>&1)
+    db_exit=$?
+
+    if [[ $db_exit -ne 0 ]]; then
+        log "${RED}✘ Falha ao preparar o banco de dados do Chatwoot (exit $db_exit).${NC}"
+        echo "$db_log" | tail -20
+        log "${YELLOW}  Para repetir manualmente: cd ${DEPLOY_DIR} && docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare${NC}"
+        return 1
+    fi
+
+    # Verifica padrões de erro mesmo com exit 0 (Rails às vezes retorna 0 em falhas parciais)
+    if echo "$db_log" | grep -qiE '(ActiveRecord::|Error:|FATAL:|rake aborted)'; then
+        log "${YELLOW}⚠ db:chatwoot_prepare concluiu mas contém avisos/erros no log:${NC}"
+        echo "$db_log" | grep -iE '(ActiveRecord::|Error:|FATAL:|rake aborted)' | head -5
+    else
+        log_ok "Banco de dados do Chatwoot preparado com sucesso."
+    fi
 }
 
 # ==============================================================================
