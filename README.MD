@@ -23,18 +23,19 @@ O ecossistema provisiona e orquestra automaticamente os seguintes serviços:
 - **Chatwoot:** Plataforma _omnichannel_ de atendimento ao cliente (CRM/Inbox). Centraliza o suporte humano e o histórico de conversações. Opera com instâncias dedicadas para a aplicação (Rails) e processamento em segundo plano (Sidekiq).
 - **Typebot:** Construtor visual avançado para fluxos de conversação automatizada. Fragmentado em duas camadas operacionais: _Builder_ (criação visual de fluxos) e _Viewer_ (motor de execução e renderização para os usuários finais).
 - **n8n:** Orquestrador de automação de fluxos de trabalho. Configurado em topologia escalável avançada (modo de fila com _Workers_ e _Runners_), responsável por interligar todos os sistemas via APIs e Webhooks.
-- **Mailpit:** Servidor SMTP interno. Atua como interceptador e roteador de e-mails transacionais gerados pelo ecossistema, dispensando a necessidade imediata de provedores externos para notificações do sistema.
-- **DocOps:** Painel de monitoramento e visibilidade de infraestrutura. Fornece métricas e controle em tempo real sobre a saúde dos contêineres Docker do ambiente host.
+- **Mailpit** _(opcional)_**:** Servidor SMTP interno. Atua como interceptador e roteador de e-mails transacionais gerados pelo ecossistema, dispensando a necessidade imediata de provedores externos para notificações do sistema.
+- **DocOps** _(opcional)_**:** Painel de monitoramento e visibilidade de infraestrutura. Fornece métricas e controle em tempo real sobre a saúde dos contêineres Docker do ambiente host.
 
 ### 🚀 Como Executar
 
 **1. Pré-requisitos**
 
-- Sistema Operacional Linux (Debian/Ubuntu ou RHEL/CentOS).
+- Sistema Operacional Linux (Debian/Ubuntu ou RHEL/CentOS/Rocky/Alma).
 - Privilégios de superusuário (root).
 - Um domínio principal com apontamento DNS (Tipo A) configurado para o IP do servidor (caso utilize HTTPS via Traefik).
 
 **2. Implantação Automatizada**
+
 Faça o download do script orquestrador e inicie o deploy interativo. O assistente cuidará da clonagem, auditoria de dependências, geração segura de credenciais criptográficas e inicialização da malha de rede.
 
 ```bash
@@ -45,7 +46,25 @@ sudo su
 bash <(curl -sSL https://raw.githubusercontent.com/Or4cu1o/chatbot/main/deploy.sh)
 ```
 
-**3. URLs de Acesso**
+**3. Anamnese Interativa**
+
+O script conduz um assistente passo a passo que configura toda a infraestrutura antes do deploy:
+
+**4. O que o script faz automaticamente**
+
+1. Detecta o sistema operacional e hardware.
+2. Instala dependências ausentes (curl, git, openssl, Docker, UFW/Firewalld).
+3. Clona o repositório em `/opt/chatbot`.
+4. Gera credenciais criptográficas aleatórias para todos os serviços.
+5. Preenche os arquivos `.env` e `envs/*.env` com base nas respostas da anamnese.
+6. Cria a rede Docker `rede_proxy` e configura o firewall (portas 22, 80 e 443).
+7. Monta o `docker-compose.yml` dinamicamente via injeção de modelos YAML.
+8. Realiza o download das imagens em lotes organizados por criticidade.
+9. Prepara o banco de dados do Chatwoot.
+10. Gera o arquivo `instrucoes_acesso.txt` com URLs, credenciais e apontamentos DNS.
+
+**5. URLs de Acesso**
+
 Após o status _healthy_ de todos os contêineres, os serviços estarão disponíveis nos subdomínios vinculados ao seu domínio base (exemplo considerando HTTPS):
 
 - **Automação:** `https://n8n.<seu-dominio>`
@@ -55,13 +74,22 @@ Após o status _healthy_ de todos os contêineres, os serviços estarão dispon�
 - **API de Mensageria:** `https://api-evolution.<seu-dominio>`
 - **Gestão de Mensageria:** `https://manager-evolution.<seu-dominio>`
 - **Armazenamento S3:** `https://console-minio.<seu-dominio>`
-- **E-mail Interno:** `https://mail-chatbot.<seu-dominio>`
-- **Monitoramento:** `https://monitor.<seu-dominio>`
+- **E-mail Interno** _(Mailpit)_**:** `https://mail-chatbot.<seu-dominio>`
+- **Monitoramento** _(DocOps)_**:** `https://monitor.<seu-dominio>`
 
-**4. Gerenciamento Pós-Deploy**
-Para iniciar ou parar a infraestrutura de forma segura após a instalação inicial, acesse o diretório da aplicação e utilize os scripts de rotina gerados automaticamente:
+**6. Gerenciamento Pós-Deploy**
+
+Para iniciar ou parar a infraestrutura de forma segura após a instalação inicial, acesse o diretório da aplicação:
 
 ```bash
-./start.sh
-./stop.sh
+cd /opt/chatbot
+
+# Iniciar toda a infraestrutura
+docker compose up -d
+
+# Parar todos os contêineres
+docker compose down
+
+# Verificar saúde dos serviços
+docker compose ps
 ```

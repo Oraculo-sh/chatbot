@@ -154,8 +154,10 @@ services:
 
   # --- TYPEBOT ---
   typebot-builder:
-    image: baptistearno/typebot-builder:latest
+    image: baptistearno/typebot-builder:3.14.2
     container_name: typebot-builder
+    security_opt:
+      - seccomp:unconfined
     <<: [ *base, *servicebase ]
     env_file: ./envs/typebot.env
     environment:
@@ -163,8 +165,10 @@ services:
       - REDIS_URL=redis://:${REDIS_PASS}@redis-chatbot:6379/2
 
   typebot-viewer:
-    image: baptistearno/typebot-viewer:latest
+    image: baptistearno/typebot-viewer:3.14.2
     container_name: typebot-viewer
+    security_opt:
+      - seccomp:unconfined
     <<: [ *base, *servicebase ]
     env_file: ./envs/typebot.env
     environment:
